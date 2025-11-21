@@ -1,11 +1,12 @@
-// utils.js
 import { els } from "./dom.js";
 
 // --- HISTORY MANAGEMENT ---
 let subjectHistory = JSON.parse(localStorage.getItem("nats_subject_history") || "[]");
+let urlHistory = JSON.parse(localStorage.getItem("nats_url_history") || "[]");
 
 export function renderHistory() {
   els.subHistory.innerHTML = subjectHistory.map(s => `<option value="${s}">`).join("");
+  els.urlHistory.innerHTML = urlHistory.map(u => `<option value="${u}">`).join("");
 }
 
 export function addToHistory(subject) {
@@ -17,7 +18,16 @@ export function addToHistory(subject) {
   renderHistory();
 }
 
-// --- JSON BEAUTIFIER ---
+export function addToUrlHistory(url) {
+  if (!url) return;
+  urlHistory = urlHistory.filter(u => u !== url);
+  urlHistory.unshift(url);
+  if (urlHistory.length > 5) urlHistory.pop();
+  localStorage.setItem("nats_url_history", JSON.stringify(urlHistory));
+  renderHistory();
+}
+
+// --- JSON UTILS ---
 export function beautify(el) {
   const val = el.value.trim();
   if (!val) return;
@@ -26,6 +36,22 @@ export function beautify(el) {
     el.value = JSON.stringify(obj, null, 2); 
   } catch (e) { 
     // Ignore invalid JSON
+  }
+}
+
+export function validateJsonInput(el) {
+  const val = el.value.trim();
+  if (!val) {
+    el.classList.remove("input-error");
+    return true;
+  }
+  try {
+    JSON.parse(val);
+    el.classList.remove("input-error");
+    return true;
+  } catch (e) {
+    el.classList.add("input-error");
+    return false;
   }
 }
 

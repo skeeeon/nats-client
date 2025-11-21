@@ -4,6 +4,7 @@ export const els = {
 
   // Connection & Info
   url: document.getElementById("serverUrl"),
+  urlHistory: document.getElementById("urlHistory"),
   creds: document.getElementById("credsFile"),
   // Auth Inputs
   authUser: document.getElementById("authUser"),
@@ -59,7 +60,8 @@ export const els = {
   kvKeyList: document.getElementById("kvKeyList"),
   kvKeyInput: document.getElementById("kvKeyInput"),
   kvValueInput: document.getElementById("kvValueInput"),
-  kvHistoryList: document.getElementById("kvHistoryList"), // New
+  kvHistoryList: document.getElementById("kvHistoryList"),
+  btnKvCopy: document.getElementById("btnKvCopy"),
   btnKvGet: document.getElementById("btnKvGet"),
   btnKvPut: document.getElementById("btnKvPut"),
   btnKvDelete: document.getElementById("btnKvDelete"),

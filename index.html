@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- Viewport fixed to prevent zoom issues on mobile -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>NATS Client</title>
   <link rel="stylesheet" href="./style.css" />
@@ -37,15 +38,17 @@
       
       <div class="box">
         <div class="box-header"><h3>Connection</h3></div>
-        <input type="text" id="serverUrl" value="ws://localhost:9222" placeholder="ws://..." />
+        <!-- URL Input with History Datalist -->
+        <input type="text" id="serverUrl" list="urlHistory" value="ws://localhost:9222" placeholder="ws://..." />
+        <datalist id="urlHistory"></datalist>
         
         <!-- Auth Toggles -->
         <div style="margin-bottom: 10px; border-top: 1px solid #333; padding-top:10px;">
-          <label>Authentication (Optional/Choose One)</label>
+          <label>Authentication (Optional)</label>
           <input type="text" id="authUser" placeholder="Username" style="margin-bottom: 5px;" />
           <input type="password" id="authPass" placeholder="Password" style="margin-bottom: 5px;" />
           <input type="password" id="authToken" placeholder="Token (overrides User/Pass)" />
-          <div style="margin-top:5px; font-size:0.75rem; color:#666;">Upload .creds file:</div>
+          <div style="margin-top:5px; font-size:0.75rem; color:#666;">OR upload .creds file:</div>
         </div>
         
         <input type="file" id="credsFile" accept=".creds,.txt" />
@@ -144,7 +147,10 @@
                 </div>
               </div>
               <div style="flex-grow:1; display:flex; flex-direction:column;">
-                <label>Value</label>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label>Value</label>
+                  <button id="btnKvCopy" class="sm-btn" style="margin-bottom:4px;">Copy</button>
+                </div>
                 <textarea id="kvValueInput" style="flex-grow:1; margin-bottom:10px;" placeholder="Value"></textarea>
                 
                 <!-- History Section -->

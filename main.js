@@ -23,7 +23,10 @@ els.btnConnect.addEventListener("click", async () => {
   }
 
   try {
-    localStorage.setItem("nats_url", els.url.value);
+    const url = els.url.value;
+    localStorage.setItem("nats_url", url);
+    utils.addToUrlHistory(url);
+    
     els.statusText.innerText = "Connecting...";
     
     // Gather Auth Options
@@ -34,7 +37,7 @@ els.btnConnect.addEventListener("click", async () => {
         token: els.authToken.value.trim()
     };
     
-    await nats.connectToNats(els.url.value, authOptions, (err) => {
+    await nats.connectToNats(url, authOptions, (err) => {
       ui.setConnectionState(false);
       if (err) {
         ui.showToast(`Connection Lost: ${err.message}`, "error");
@@ -64,6 +67,7 @@ els.btnInfo.addEventListener("click", () => {
   els.infoModal.style.display = "flex";
 });
 els.btnCloseModal.addEventListener("click", () => els.infoModal.style.display = "none");
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") els.infoModal.style.display = "none"; });
 
 // 3. TABS
 els.tabMsg.onclick = () => ui.switchTab('msg');
@@ -81,7 +85,14 @@ els.btnSub.addEventListener("click", () => {
     const { id, subject, size } = nats.subscribe(subj);
     const li = document.createElement("li");
     li.id = `sub-li-${id}`;
-    li.innerHTML = `<span>${subject}</span><button class="danger" onclick="window.unsubscribe(${id})">X</button>`;
+    // Click-to-Fill Logic added here
+    li.innerHTML = `
+      <span style="cursor:pointer;" title="Click to copy to Publish" 
+            onclick="document.getElementById('pubSubject').value = '${subject}'">
+        ${subject}
+      </span>
+      <button class="danger" onclick="window.unsubscribe(${id})">X</button>
+    `;
     els.subList.prepend(li);
     els.subCount.innerText = `(${size})`;
     els.subSubject.value = "";
@@ -124,9 +135,16 @@ els.btnReq.addEventListener("click", async () => {
 // --- UI HELPERS ---
 els.subSubject.addEventListener("keyup", (e) => { if (e.key === "Enter") els.btnSub.click(); });
 els.pubPayload.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") els.btnPub.click(); });
-els.pubPayload.addEventListener("blur", () => utils.beautify(els.pubPayload));
-els.pubHeaders.addEventListener("blur", () => utils.beautify(els.pubHeaders));
-els.kvValueInput.addEventListener("blur", () => utils.beautify(els.kvValueInput));
+
+// Validation & Beautify
+els.pubPayload.addEventListener("input", () => utils.validateJsonInput(els.pubPayload));
+els.pubHeaders.addEventListener("input", () => utils.validateJsonInput(els.pubHeaders));
+els.kvValueInput.addEventListener("input", () => utils.validateJsonInput(els.kvValueInput));
+
+els.pubPayload.addEventListener("blur", () => { if(utils.validateJsonInput(els.pubPayload)) utils.beautify(els.pubPayload); });
+els.pubHeaders.addEventListener("blur", () => { if(utils.validateJsonInput(els.pubHeaders)) utils.beautify(els.pubHeaders); });
+els.kvValueInput.addEventListener("blur", () => { if(utils.validateJsonInput(els.kvValueInput)) utils.beautify(els.kvValueInput); });
+
 els.btnClear.addEventListener("click", () => els.messages.innerHTML = "");
 els.logFilter.addEventListener("keyup", (e) => ui.filterLogs(e.target.value));
 els.btnPause.addEventListener("click", ui.toggleLogPause);
@@ -166,7 +184,7 @@ async function loadKvBucketsWrapper() {
 els.btnKvRefresh.addEventListener("click", loadKvBucketsWrapper);
 
 // SELECT BUCKET & WATCH
-const kvKeysMap = new Set(); // Local cache of keys to handle updates efficiently
+const kvKeysMap = new Set(); 
 
 els.kvBucketSelect.addEventListener("change", async () => {
   const bucket = els.kvBucketSelect.value;
@@ -240,7 +258,7 @@ async function selectKeyWrapper(key, uiEl) {
             <span class="badge" style="font-size:0.7em">${h.operation}</span>
             <span style="float:right; color:#666;">${h.created.toLocaleTimeString()}</span>
         `;
-        row.title = h.value; // Tooltip shows value
+        row.title = h.value; 
         els.kvHistoryList.appendChild(row);
     });
 
@@ -252,6 +270,16 @@ async function selectKeyWrapper(key, uiEl) {
 
 els.btnKvGet.addEventListener("click", () => selectKeyWrapper(els.kvKeyInput.value));
 
+// COPY KV
+els.btnKvCopy.addEventListener("click", () => {
+  const val = els.kvValueInput.value;
+  if(!val) return;
+  navigator.clipboard.writeText(val);
+  const orig = els.btnKvCopy.innerText;
+  els.btnKvCopy.innerText = "Copied!";
+  setTimeout(() => els.btnKvCopy.innerText = orig, 1000);
+});
+
 els.btnKvPut.addEventListener("click", async () => {
   const key = els.kvKeyInput.value.trim();
   const val = els.kvValueInput.value;
@@ -260,8 +288,6 @@ els.btnKvPut.addEventListener("click", async () => {
     await nats.putKvValue(key, val);
     ui.setKvStatus(`Saved '${key}'`);
     ui.showToast("Key Saved", "success");
-    // No need to manually reload keys, watcher handles it!
-    // Refresh history though
     selectKeyWrapper(key);
   } catch (e) { ui.setKvStatus(e.message, true); ui.showToast(e.message, "error"); }
 });
