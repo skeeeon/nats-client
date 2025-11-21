@@ -36,8 +36,10 @@ export const els = {
   // Tabs
   tabMsg: document.getElementById("tabMsg"),
   tabKv: document.getElementById("tabKv"),
+  tabStream: document.getElementById("tabStream"),
   panelMsg: document.getElementById("panelMsg"),
   panelKv: document.getElementById("panelKv"),
+  panelStream: document.getElementById("panelStream"),
 
   // Messaging
   pubSubject: document.getElementById("pubSubject"),
@@ -65,5 +67,35 @@ export const els = {
   btnKvGet: document.getElementById("btnKvGet"),
   btnKvPut: document.getElementById("btnKvPut"),
   btnKvDelete: document.getElementById("btnKvDelete"),
-  kvStatus: document.getElementById("kvStatus")
+  kvStatus: document.getElementById("kvStatus"),
+  
+  // Streams
+  btnStreamRefresh: document.getElementById("btnStreamRefresh"),
+  streamList: document.getElementById("streamList"),
+  streamDetailView: document.getElementById("streamDetailView"),
+  streamEmptyState: document.getElementById("streamEmptyState"),
+  
+  // Stream Details
+  streamNameTitle: document.getElementById("streamNameTitle"),
+  streamCreated: document.getElementById("streamCreated"),
+  streamSubjects: document.getElementById("streamSubjects"),
+  streamStorage: document.getElementById("streamStorage"),
+  streamRetention: document.getElementById("streamRetention"),
+  streamMsgs: document.getElementById("streamMsgs"),
+  streamBytes: document.getElementById("streamBytes"),
+  streamFirstSeq: document.getElementById("streamFirstSeq"),
+  streamLastSeq: document.getElementById("streamLastSeq"),
+  streamConsumerCount: document.getElementById("streamConsumerCount"),
+  
+  // Stream Actions
+  btnStreamPurge: document.getElementById("btnStreamPurge"),
+  btnStreamDelete: document.getElementById("btnStreamDelete"),
+  
+  // Consumers (NEW)
+  btnLoadConsumers: document.getElementById("btnLoadConsumers"),
+  consumerList: document.getElementById("consumerList"),
+
+  // Messages
+  btnStreamViewMsgs: document.getElementById("btnStreamViewMsgs"),
+  streamMsgContainer: document.getElementById("streamMsgContainer"),
 };

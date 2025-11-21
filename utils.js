@@ -55,11 +55,19 @@ export function validateJsonInput(el) {
   }
 }
 
-// --- GLOBAL HELPERS (Attached to window for HTML onclicks) ---
+export function formatBytes(bytes, decimals = 2) {
+    if (!+bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
+
+// --- GLOBAL HELPERS ---
 window.copyToClipboard = (id) => {
   const el = document.getElementById(id);
   if (el) navigator.clipboard.writeText(el.innerText);
 };
 
-// Load Initial State
 renderHistory();

@@ -77,6 +77,7 @@
       <div class="tab-bar">
         <button id="tabMsg" class="tab-btn active">Messaging</button>
         <button id="tabKv" class="tab-btn">KV Store</button>
+        <button id="tabStream" class="tab-btn">Streams</button>
       </div>
 
       <!-- MESSAGING PANEL -->
@@ -165,6 +166,78 @@
                  <button id="btnKvPut" class="primary">Put / Update</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STREAM PANEL -->
+      <div id="panelStream" class="panel-content" style="display:none;">
+        <div class="box box-grow">
+          <div class="box-header">
+            <h3>JetStream Streams</h3>
+            <div style="display:flex; gap:5px;">
+              <button id="btnStreamRefresh" class="sm-btn">Refresh</button>
+            </div>
+          </div>
+          
+          <div class="kv-layout">
+            
+            <!-- Stream List -->
+            <div class="kv-list">
+              <label>Streams</label>
+              <div id="streamList"><div class="kv-empty">Loading...</div></div>
+            </div>
+
+            <!-- Stream Details -->
+            <div class="kv-editor" id="streamDetailView" style="display:none;">
+              <div style="border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">
+                  <h2 id="streamNameTitle" style="margin:0; color:var(--primary);">Stream Name</h2>
+                  <span id="streamCreated" style="font-size:0.75rem; color:#666;"></span>
+              </div>
+
+              <!-- Config Grid -->
+              <div class="info-grid">
+                  <div class="info-item"><label>Subjects</label><span id="streamSubjects" style="color:var(--accent)">-</span></div>
+                  <div class="info-item"><label>Storage</label><span id="streamStorage">-</span></div>
+                  <div class="info-item"><label>Retention</label><span id="streamRetention">-</span></div>
+                  <div class="info-item"><label>Messages</label><span id="streamMsgs">-</span></div>
+                  <div class="info-item"><label>Bytes</label><span id="streamBytes">-</span></div>
+                  <div class="info-item"><label>First Seq</label><span id="streamFirstSeq">-</span></div>
+                  <div class="info-item"><label>Last Seq</label><span id="streamLastSeq">-</span></div>
+                  <div class="info-item"><label>Consumer Count</label><span id="streamConsumerCount">-</span></div>
+              </div>
+              
+              <div style="margin-top:15px; display:flex; gap:10px; justify-content:flex-end; border-bottom:1px solid #333; padding-bottom:15px;">
+                  <button id="btnStreamPurge" class="paused">Purge Messages</button>
+                  <button id="btnStreamDelete" class="danger">Delete Stream</button>
+              </div>
+
+              <!-- NEW: Consumers Section -->
+              <div style="margin-top:10px; border-bottom:1px solid #333; padding-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                    <label>Consumers</label>
+                    <button id="btnLoadConsumers" class="sm-btn">Load Consumers</button>
+                </div>
+                <div id="consumerList" class="scroll-container" style="height:120px; min-height:120px; background:#0d1117; border:1px solid var(--border);">
+                    <div style="padding:10px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view consumers</div>
+                </div>
+              </div>
+
+              <!-- Stream Messages Section -->
+              <div style="flex-grow:1; display:flex; flex-direction:column; margin-top:10px; min-height:200px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                    <label>Recent Messages (Last 50)</label>
+                    <button id="btnStreamViewMsgs" class="sm-btn">Load Messages</button>
+                </div>
+                <div id="streamMsgContainer" class="scroll-container" style="background:#0d1117; border:1px solid var(--border); flex-grow:1;">
+                    <div style="padding:20px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view recent stream messages</div>
+                </div>
+              </div>
+
+            </div>
+            
+            <div id="streamEmptyState" class="kv-empty">Select a stream to view details</div>
+
           </div>
         </div>
       </div>

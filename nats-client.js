@@ -5,7 +5,7 @@ import { renderMessage } from "./ui.js";
 
 let nc = null;
 let kv = null;
-// We need to keep track of the watcher to stop it when switching buckets
+let jsm = null;
 let activeKvWatcher = null; 
 
 const sc = StringCodec();
@@ -19,7 +19,7 @@ export async function connectToNats(url, authOptions, onDisconnectCb) {
 
   const opts = { servers: url, ignoreClusterUpdates: true };
 
-  // Handle .creds file
+  // Handle Auth
   if (authOptions.credsFile) {
     let rawText = await authOptions.credsFile.text();
     const jwtIndex = rawText.indexOf("-----BEGIN NATS USER JWT-----");
@@ -27,13 +27,9 @@ export async function connectToNats(url, authOptions, onDisconnectCb) {
     else if (jwtIndex === -1) throw new Error("Invalid .creds file");
     rawText = rawText.replace(/\r\n/g, "\n");
     opts.authenticator = credsAuthenticator(new TextEncoder().encode(rawText));
-  } 
-  // Handle Token
-  else if (authOptions.token) {
+  } else if (authOptions.token) {
     opts.token = authOptions.token;
-  }
-  // Handle User/Pass
-  else if (authOptions.user) {
+  } else if (authOptions.user) {
     opts.user = authOptions.user;
     opts.pass = authOptions.pass;
   }
@@ -61,6 +57,7 @@ export async function disconnect() {
   }
   
   kv = null;
+  jsm = null;
   subscriptions.clear();
   subCounter = 0;
 }
@@ -173,14 +170,9 @@ export async function openKvBucket(bucketName) {
   return kv;
 }
 
-// NEW: Real-time watcher
 export async function watchKvBucket(onKeyChange) {
   if (!kv) return;
-  
-  // Stop previous watch if exists
-  if (activeKvWatcher) {
-    activeKvWatcher.stop();
-  }
+  if (activeKvWatcher) activeKvWatcher.stop();
 
   const iter = await kv.watch();
   activeKvWatcher = iter;
@@ -188,7 +180,6 @@ export async function watchKvBucket(onKeyChange) {
   (async () => {
     try {
       for await (const e of iter) {
-        // e.operation is "PUT", "DEL", or "PURGE"
         onKeyChange(e.key, e.operation);
       }
     } catch (err) {
@@ -207,7 +198,6 @@ export async function getKvValue(key) {
   };
 }
 
-// NEW: Get History
 export async function getKvHistory(key) {
     if (!kv) return [];
     const hist = [];
@@ -220,7 +210,6 @@ export async function getKvHistory(key) {
             created: e.created
         });
     }
-    // Return newest first
     return hist.reverse();
 }
 
@@ -232,4 +221,73 @@ export async function putKvValue(key, value) {
 export async function deleteKvValue(key) {
   if (!kv) throw new Error("No Bucket Open");
   await kv.delete(key);
+}
+
+// --- STREAMS ---
+async function getJsm() {
+  if (!nc) throw new Error("Not Connected");
+  if (!jsm) jsm = await nc.jetstreamManager();
+  return jsm;
+}
+
+export async function getStreams() {
+  const mgr = await getJsm();
+  const list = [];
+  const iter = await mgr.streams.list();
+  for await (const s of iter) {
+    list.push(s);
+  }
+  return list;
+}
+
+export async function getStreamInfo(name) {
+  const mgr = await getJsm();
+  return await mgr.streams.info(name);
+}
+
+export async function purgeStream(name) {
+  const mgr = await getJsm();
+  await mgr.streams.purge(name);
+}
+
+export async function deleteStream(name) {
+  const mgr = await getJsm();
+  await mgr.streams.delete(name);
+}
+
+export async function getConsumers(streamName) {
+  const mgr = await getJsm();
+  const list = [];
+  const iter = await mgr.consumers.list(streamName);
+  for await (const c of iter) {
+    list.push(c);
+  }
+  return list;
+}
+
+export async function getRecentStreamMessages(name, limit = 50) {
+    const mgr = await getJsm();
+    const info = await mgr.streams.info(name);
+    const lastSeq = info.state.last_seq;
+    const firstSeq = info.state.first_seq;
+    
+    if (info.state.messages === 0) return [];
+
+    let start = lastSeq - limit + 1;
+    if (start < firstSeq) start = firstSeq;
+
+    const msgs = [];
+    for (let i = start; i <= lastSeq; i++) {
+        try {
+            const sm = await mgr.streams.getMessage(name, { seq: i });
+            msgs.push({
+                seq: sm.seq,
+                subject: sm.subject,
+                data: sc.decode(sm.data),
+                time: sm.time
+            });
+        } catch (e) {
+        }
+    }
+    return msgs.reverse(); 
 }

@@ -23,16 +23,24 @@ export function toggleLogPause() {
 
 // --- TABS ---
 export function switchTab(mode) {
+  // Reset
+  els.tabMsg.classList.remove('active');
+  els.tabKv.classList.remove('active');
+  els.tabStream.classList.remove('active');
+  
+  els.panelMsg.style.display = 'none';
+  els.panelKv.style.display = 'none';
+  els.panelStream.style.display = 'none';
+
   if (mode === 'msg') {
     els.tabMsg.classList.add('active');
-    els.tabKv.classList.remove('active');
     els.panelMsg.style.display = 'flex';
-    els.panelKv.style.display = 'none';
-  } else {
+  } else if (mode === 'kv') {
     els.tabKv.classList.add('active');
-    els.tabMsg.classList.remove('active');
     els.panelKv.style.display = 'flex';
-    els.panelMsg.style.display = 'none';
+  } else if (mode === 'stream') {
+    els.tabStream.classList.add('active');
+    els.panelStream.style.display = 'flex';
   }
 }
 
@@ -41,7 +49,7 @@ export function setConnectionState(isConnected) {
   if (isConnected) {
     // CONNECTED STATE
     els.btnConnect.innerText = "Disconnect";
-    els.btnConnect.className = "danger"; // Switch to Red
+    els.btnConnect.className = "danger"; 
     els.url.disabled = true;
     els.creds.disabled = true;
     els.subPanel.style.display = "flex";
@@ -52,7 +60,7 @@ export function setConnectionState(isConnected) {
   } else {
     // DISCONNECTED STATE
     els.btnConnect.innerText = "Connect";
-    els.btnConnect.className = "primary"; // Switch to Green
+    els.btnConnect.className = "primary"; 
     els.url.disabled = false;
     els.creds.disabled = false;
     els.subPanel.style.display = "none";
@@ -62,10 +70,8 @@ export function setConnectionState(isConnected) {
     els.statusDot.className = "status-dot";
     els.rttLabel.style.opacity = 0;
     
-    // Clear specific UI elements
     els.subList.innerHTML = "";
     els.subCount.innerText = "(0)";
-    // Note: We deliberately DO NOT clear the logs here, users might want to read them after disconnect.
   }
 }
 
@@ -112,8 +118,17 @@ export function renderMessage(subject, data, isRpc = false, msgHeaders = null) {
     <pre id="${msgId}">${content}</pre>
   `;
   
-  els.messages.prepend(div);
-  if (els.messages.children.length > 100) els.messages.lastChild.remove();
+  // Append Log Logic
+  const container = els.messages;
+  const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+  
+  els.messages.appendChild(div);
+  
+  if (isAtBottom) {
+    container.scrollTop = container.scrollHeight;
+  }
+
+  if (els.messages.children.length > 100) els.messages.firstChild.remove();
 }
 
 export function filterLogs(val) {
