@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <title>NATS Client</title>
+  <title>NATS Grug Client 🪨</title>
   <style>
     /* --- THEME --- */
     :root {
@@ -14,6 +14,25 @@
     }
     body { font-family: var(--font); background: var(--bg); color: var(--text); margin: 0; padding: 15px; height: 100vh; box-sizing: border-box; overflow: hidden; }
 
+    /* --- TOASTS --- */
+    #toast-container {
+      position: fixed; top: 20px; right: 20px; z-index: 2000;
+      display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+    }
+    .toast {
+      background: #222; color: #fff; padding: 12px 16px; border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5); border-left: 4px solid #555;
+      font-size: 0.9rem; min-width: 250px; pointer-events: auto;
+      animation: slideIn 0.3s ease-out forwards;
+    }
+    .toast.success { border-left-color: var(--primary); }
+    .toast.error { border-left-color: var(--danger); }
+    .toast.info { border-left-color: var(--accent); }
+    .toast.hiding { animation: fadeOut 0.3s ease-in forwards; }
+
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes fadeOut { to { transform: translateX(10px); opacity: 0; } }
+
     /* --- LAYOUT --- */
     .main-layout { display: grid; grid-template-columns: 320px 1fr; gap: 15px; height: 100%; overflow: hidden; }
     .sidebar, .content { display: flex; flex-direction: column; gap: 15px; height: 100%; min-height: 0; overflow: hidden; }
@@ -23,53 +42,43 @@
     .box-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
     h3 { margin: 0; font-size: 0.8rem; text-transform: uppercase; color: var(--muted); }
 
-    /* --- TABS --- */
-    .tab-bar { display: flex; gap: 10px; margin-bottom: 5px; flex-shrink: 0; }
-    .tab-btn { 
-      background: transparent; border: 1px solid var(--border); color: var(--muted); 
-      padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: 600; 
+    /* --- MODAL --- */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.7); z-index: 100; display: none;
+      justify-content: center; align-items: center;
     }
-    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .tab-btn:hover:not(.active) { background: #222; color: #fff; }
-
-    /* --- KV LAYOUT --- */
-    .kv-layout { display: grid; grid-template-columns: 250px 1fr; gap: 15px; height: 100%; min-height: 0; }
-    .kv-list { overflow-y: auto; border-right: 1px solid var(--border); padding-right: 10px; }
-    .kv-editor { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
-    
-    .kv-key { 
-      padding: 8px; cursor: pointer; border-bottom: 1px solid #222; font-family: var(--mono); font-size: 0.85rem; word-break: break-all;
+    .modal {
+      background: var(--panel); border: 1px solid var(--border); 
+      padding: 20px; border-radius: 8px; width: 500px; max-width: 90%;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
     }
-    .kv-key:hover { background: #2a2a2a; }
-    .kv-key.active { background: #333; border-left: 3px solid var(--warn); }
-    .kv-empty { color: var(--muted); font-style: italic; padding: 20px; text-align: center; }
+    .modal pre { background: #000; padding: 10px; border-radius: 4px; max-height: 300px; overflow: auto; }
 
-    /* --- FORMS --- */
+    /* --- INPUTS --- */
     label { display: block; margin-bottom: 4px; font-size: 0.75rem; color: var(--muted); font-weight: 600; }
     input[type="text"], input[type="number"], input[type="file"], textarea, input[type="search"], select { 
       width: 100%; padding: 10px; background: #0d0d0d; border: 1px solid var(--border); color: #fff; 
       border-radius: 4px; box-sizing: border-box; font-family: var(--mono); font-size: 0.9rem; margin-bottom: 10px; 
     }
-    select { appearance: none; background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23888%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E"); background-repeat: no-repeat; background-position: right .7em top 50%; background-size: .65em auto; }
     input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); }
     textarea { resize: vertical; min-height: 80px; }
-
-    /* Helpers */
     .filter-input { background: #000 !important; padding: 4px 8px !important; margin: 0 !important; width: 150px !important; font-size: 0.75rem !important; border-color: #444 !important; }
     .sm-input { padding: 6px !important; font-size: 0.8rem !important; margin-bottom: 0 !important; text-align: center; }
-    .full-h { height: 100%; }
 
     /* --- BUTTONS --- */
-    button { background: #333; color: #fff; padding: 10px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    button { background: #333; color: #fff; padding: 10px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: all 0.2s; }
     button:active { transform: translateY(1px); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     button.primary { background: var(--primary); color: #000; }
     button.accent { background: var(--accent); color: #fff; }
     button.danger { background: var(--danger); padding: 4px 8px; font-size: 0.7rem; }
-    button.warn { background: var(--warn); color: #000; }
     button.icon-btn { padding: 8px 12px; font-size: 1.1rem; line-height: 1; }
-    button.sm-btn { padding: 4px 8px; font-size: 0.7rem; background: transparent; border: 1px solid #444; }
+    button.sm-btn { padding: 4px 8px; font-size: 1rem; background: transparent; border: 1px solid #444; }
     
+    /* Pause Button State */
+    button.paused { background: var(--warn); color: #000; border-color: var(--warn); }
+
     .copy-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 0.75rem; margin-left: auto; }
     .copy-btn:hover { color: #fff; background: #333; border-radius: 3px; }
 
@@ -77,7 +86,7 @@
     .scroll-container, #messages { flex: 1; min-height: 0; overflow-y: auto; background: #0d0d0d; border: 1px solid var(--border); border-radius: 4px; }
     #messages { padding: 10px; font-family: var(--mono); font-size: 0.85rem; }
 
-    /* --- LOGS --- */
+    /* --- LOG ENTRIES --- */
     .msg-entry { margin-bottom: 10px; border-bottom: 1px solid #222; padding-bottom: 6px; }
     .msg-meta { margin-bottom: 4px; color: var(--muted); font-size: 0.75em; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .badge { padding: 2px 5px; border-radius: 3px; font-weight: bold; }
@@ -94,6 +103,19 @@
     .status-dot.connected { background: #4CAF50; box-shadow: 0 0 8px #4CAF50; animation: pulse 2s infinite; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
+    /* --- TABS & KV --- */
+    .tab-bar { display: flex; gap: 10px; margin-bottom: 5px; flex-shrink: 0; }
+    .tab-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: 600; }
+    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    
+    .kv-layout { display: grid; grid-template-columns: 250px 1fr; gap: 15px; height: 100%; min-height: 0; }
+    .kv-list { overflow-y: auto; border-right: 1px solid var(--border); padding-right: 10px; }
+    .kv-editor { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+    .kv-key { padding: 8px; cursor: pointer; border-bottom: 1px solid #222; font-family: var(--mono); font-size: 0.85rem; word-break: break-all; }
+    .kv-key:hover { background: #2a2a2a; }
+    .kv-key.active { background: #333; border-left: 3px solid var(--warn); }
+    .kv-empty { color: var(--muted); font-style: italic; padding: 20px; text-align: center; }
+
     @media (max-width: 768px) {
       body { height: auto; overflow-y: auto; padding: 10px; }
       .main-layout { grid-template-columns: 1fr; height: auto; overflow: visible; }
@@ -102,21 +124,38 @@
       .pub-row { flex-direction: column; }
       .pub-actions { width: 100%; display: flex; flex-direction: row; gap: 10px; margin-top: 5px; align-items: center; }
       .pub-actions button { flex: 1; }
-      /* Stack KV */
       .kv-layout { grid-template-columns: 1fr; }
       .kv-list { border-right: none; border-bottom: 1px solid var(--border); padding-bottom: 10px; height: 200px; }
     }
   </style>
 </head>
 <body>
+  <!-- TOAST CONTAINER -->
+  <div id="toast-container"></div>
+
+  <!-- SERVER INFO MODAL -->
+  <div id="infoModal" class="modal-overlay">
+    <div class="modal">
+      <div class="box-header">
+        <h3>Server Information</h3>
+        <button id="btnCloseModal" class="sm-btn">✕</button>
+      </div>
+      <pre id="serverInfoPre">Waiting for connection...</pre>
+    </div>
+  </div>
+
   <div class="main-layout">
     
-    <!-- SIDEBAR (Left) -->
+    <!-- SIDEBAR -->
     <div class="sidebar">
       <div style="display:flex; align-items:center; padding: 0 5px;">
         <div id="statusDot" class="status-dot"></div>
         <h1 style="flex-grow:1">NATS 🪨</h1>
-        <div id="statusText" style="font-size:0.75rem; color:var(--muted);">Disconnected</div>
+        <div style="text-align:right;">
+          <div id="statusText" style="font-size:1rem; color:var(--muted);">Disconnected</div>
+          <div id="rttLabel" style="font-size:0.75rem; color:var(--muted); opacity:0;">RTT: -</div>
+        </div>
+        <button id="btnInfo" class="sm-btn" style="margin-left:8px; padding:2px 6px;">i</button>
       </div>
       
       <div class="box">
@@ -140,18 +179,17 @@
       </div>
     </div>
 
-    <!-- CONTENT (Right) -->
+    <!-- CONTENT -->
     <div class="content" id="appPanel" style="display:none;">
       
       <datalist id="subHistory"></datalist>
 
-      <!-- TAB BAR -->
       <div class="tab-bar">
         <button id="tabMsg" class="tab-btn active">Messaging</button>
         <button id="tabKv" class="tab-btn">KV Store</button>
       </div>
 
-      <!-- PANEL 1: MESSAGING -->
+      <!-- MESSAGING PANEL -->
       <div id="panelMsg" class="full-h" style="display:flex; flex-direction:column; gap:15px;">
         <div class="box">
           <div class="box-header"><h3>Publish / Request</h3></div>
@@ -162,7 +200,7 @@
               <div style="border-top: 1px solid #222; padding-top: 8px;">
                 <button id="btnHeaderToggle" class="sm-btn" style="width:100%; text-align:left;">► Add Headers (Optional)</button>
                 <div id="headerContainer" style="display:none; margin-top: 8px;">
-                  <label>Headers (JSON format: <code>{"key": "value"}</code>)</label>
+                  <label>Headers (JSON format)</label>
                   <textarea id="pubHeaders" rows="3" placeholder='{"Content-Type": "application/json"}'></textarea>
                 </div>
               </div>
@@ -183,6 +221,8 @@
             <h3 style="border:none; padding:0;">Message Log</h3>
             <div style="display:flex; gap: 10px; align-items: center;">
               <input type="text" id="logFilter" class="filter-input" placeholder="Filter logs..." />
+              <!-- PAUSE BUTTON ADDED -->
+              <button id="btnPause" class="sm-btn" style="width: 60px;">Pause</button>
               <button id="btnClear" class="sm-btn">Clear</button>
             </div>
           </div>
@@ -190,35 +230,26 @@
         </div>
       </div>
 
-      <!-- PANEL 2: KEY-VALUE -->
+      <!-- KV PANEL -->
       <div id="panelKv" class="box box-grow" style="display:none;">
         <div class="box-header">
           <h3>JetStream KV Store</h3>
           <button id="btnKvRefresh" class="sm-btn">Refresh Buckets</button>
         </div>
-
         <div style="margin-bottom: 10px;">
           <label>Select Bucket</label>
-          <select id="kvBucketSelect">
-            <option value="">-- Select a Bucket --</option>
-          </select>
+          <select id="kvBucketSelect"><option value="">-- Select a Bucket --</option></select>
         </div>
-
         <div class="kv-layout">
-          <!-- Left: Keys -->
           <div class="kv-list">
             <label>Keys <button id="btnKvLoadKeys" class="sm-btn" style="float:right; padding:1px 5px;">↻</button></label>
-            <div id="kvKeyList">
-              <div class="kv-empty">Select a bucket to view keys</div>
-            </div>
+            <div id="kvKeyList"><div class="kv-empty">Select a bucket to view keys</div></div>
           </div>
-          
-          <!-- Right: Editor -->
           <div class="kv-editor">
             <div>
               <label>Key Name</label>
               <div style="display:flex; gap:5px;">
-                <input type="text" id="kvKeyInput" placeholder="Key (e.g. config.app)" />
+                <input type="text" id="kvKeyInput" placeholder="Key" />
                 <button id="btnKvGet" class="accent">Get</button>
               </div>
             </div>
