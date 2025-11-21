@@ -5,41 +5,61 @@ import { renderMessage } from "./ui.js";
 
 let nc = null;
 let kv = null;
+// We need to keep track of the watcher to stop it when switching buckets
+let activeKvWatcher = null; 
+
 const sc = StringCodec();
 const subscriptions = new Map();
 let subCounter = 0;
 let statsInterval = null;
 
 // --- CONNECTION ---
-export async function connectToNats(url, credsFile) {
-  // Clean up any previous state just in case
+export async function connectToNats(url, authOptions, onDisconnectCb) {
   await disconnect(); 
 
   const opts = { servers: url, ignoreClusterUpdates: true };
 
-  if (credsFile) {
-    let rawText = await credsFile.text();
+  // Handle .creds file
+  if (authOptions.credsFile) {
+    let rawText = await authOptions.credsFile.text();
     const jwtIndex = rawText.indexOf("-----BEGIN NATS USER JWT-----");
     if (jwtIndex > 0) rawText = rawText.substring(jwtIndex);
     else if (jwtIndex === -1) throw new Error("Invalid .creds file");
     rawText = rawText.replace(/\r\n/g, "\n");
     opts.authenticator = credsAuthenticator(new TextEncoder().encode(rawText));
+  } 
+  // Handle Token
+  else if (authOptions.token) {
+    opts.token = authOptions.token;
+  }
+  // Handle User/Pass
+  else if (authOptions.user) {
+    opts.user = authOptions.user;
+    opts.pass = authOptions.pass;
   }
 
   nc = await connect(opts);
+
+  nc.closed().then((err) => {
+    if (onDisconnectCb) onDisconnectCb(err);
+  });
+
   startStatsLoop();
   return nc;
 }
 
 export async function disconnect() {
   if (statsInterval) clearInterval(statsInterval);
+  if (activeKvWatcher) {
+    activeKvWatcher.stop();
+    activeKvWatcher = null;
+  }
   
   if (nc) {
     await nc.close();
     nc = null;
   }
   
-  // Reset Internal State
   kv = null;
   subscriptions.clear();
   subCounter = 0;
@@ -76,7 +96,11 @@ export function subscribe(subject) {
 
   (async () => {
     for await (const m of sub) {
-      renderMessage(m.subject, sc.decode(m.data), false, m.headers);
+      try {
+        renderMessage(m.subject, sc.decode(m.data), false, m.headers);
+      } catch (e) {
+        renderMessage(m.subject, `[Binary Data: ${m.data.length} bytes]`, false, m.headers);
+      }
     }
   })();
 
@@ -103,7 +127,15 @@ export async function request(subject, payload, headersJson, timeout) {
   if (!nc) return;
   const h = parseHeaders(headersJson);
   const msg = await nc.request(subject, sc.encode(payload), { timeout, headers: h });
-  return { subject: msg.subject, data: sc.decode(msg.data), headers: msg.headers };
+  
+  let data;
+  try {
+    data = sc.decode(msg.data);
+  } catch (e) {
+    data = `[Binary Response: ${msg.data.length} bytes]`;
+  }
+
+  return { subject: msg.subject, data, headers: msg.headers };
 }
 
 function parseHeaders(jsonStr) {
@@ -130,17 +162,39 @@ export async function getKvBuckets() {
   return list;
 }
 
+export async function createKvBucket(name) {
+    const kvm = new Kvm(nc);
+    await kvm.create(name);
+}
+
 export async function openKvBucket(bucketName) {
   const kvm = new Kvm(nc);
   kv = await kvm.open(bucketName);
   return kv;
 }
 
-export async function getKvKeys() {
-  if (!kv) return [];
-  const keyArr = [];
-  for await (const k of await kv.keys()) keyArr.push(k);
-  return keyArr;
+// NEW: Real-time watcher
+export async function watchKvBucket(onKeyChange) {
+  if (!kv) return;
+  
+  // Stop previous watch if exists
+  if (activeKvWatcher) {
+    activeKvWatcher.stop();
+  }
+
+  const iter = await kv.watch();
+  activeKvWatcher = iter;
+
+  (async () => {
+    try {
+      for await (const e of iter) {
+        // e.operation is "PUT", "DEL", or "PURGE"
+        onKeyChange(e.key, e.operation);
+      }
+    } catch (err) {
+      console.log("Watcher stopped or error", err);
+    }
+  })();
 }
 
 export async function getKvValue(key) {
@@ -151,6 +205,23 @@ export async function getKvValue(key) {
     value: sc.decode(entry.value),
     revision: entry.revision
   };
+}
+
+// NEW: Get History
+export async function getKvHistory(key) {
+    if (!kv) return [];
+    const hist = [];
+    const iter = await kv.history({ key });
+    for await (const e of iter) {
+        hist.push({
+            revision: e.revision,
+            operation: e.operation,
+            value: e.value ? sc.decode(e.value) : null,
+            created: e.created
+        });
+    }
+    // Return newest first
+    return hist.reverse();
 }
 
 export async function putKvValue(key, value) {

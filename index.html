@@ -38,6 +38,16 @@
       <div class="box">
         <div class="box-header"><h3>Connection</h3></div>
         <input type="text" id="serverUrl" value="ws://localhost:9222" placeholder="ws://..." />
+        
+        <!-- Auth Toggles -->
+        <div style="margin-bottom: 10px; border-top: 1px solid #333; padding-top:10px;">
+          <label>Authentication (Optional/Choose One)</label>
+          <input type="text" id="authUser" placeholder="Username" style="margin-bottom: 5px;" />
+          <input type="password" id="authPass" placeholder="Password" style="margin-bottom: 5px;" />
+          <input type="password" id="authToken" placeholder="Token (overrides User/Pass)" />
+          <div style="margin-top:5px; font-size:0.75rem; color:#666;">Upload .creds file:</div>
+        </div>
+        
         <input type="file" id="credsFile" accept=".creds,.txt" />
         <button id="btnConnect" class="primary" style="width:100%">Connect</button>
       </div>
@@ -111,7 +121,10 @@
         <div class="box box-grow">
           <div class="box-header">
             <h3>JetStream KV Store</h3>
-            <button id="btnKvRefresh" class="sm-btn">Refresh Buckets</button>
+            <div style="display:flex; gap:5px;">
+              <button id="btnKvCreate" class="sm-btn" title="Create Bucket">+</button>
+              <button id="btnKvRefresh" class="sm-btn">Refresh</button>
+            </div>
           </div>
           <div style="margin-bottom: 10px;">
             <label>Select Bucket</label>
@@ -119,7 +132,7 @@
           </div>
           <div class="kv-layout">
             <div class="kv-list">
-              <label>Keys <button id="btnKvLoadKeys" class="sm-btn" style="float:right; padding:1px 5px;">↻</button></label>
+              <label>Keys (Live Watch active)</label>
               <div id="kvKeyList"><div class="kv-empty">Select a bucket to view keys</div></div>
             </div>
             <div class="kv-editor">
@@ -132,9 +145,15 @@
               </div>
               <div style="flex-grow:1; display:flex; flex-direction:column;">
                 <label>Value</label>
-                <textarea id="kvValueInput" style="flex-grow:1; margin-bottom:0;" placeholder="Value"></textarea>
+                <textarea id="kvValueInput" style="flex-grow:1; margin-bottom:10px;" placeholder="Value"></textarea>
+                
+                <!-- History Section -->
+                <div style="border-top: 1px solid #333; padding-top:5px; max-height: 150px; overflow-y:auto;">
+                  <label>History / Revisions</label>
+                  <div id="kvHistoryList" style="font-size:0.75rem; color:var(--muted);">Select a key to view history</div>
+                </div>
               </div>
-              <div style="display:flex; gap:10px; justify-content:flex-end;">
+              <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:10px;">
                  <span id="kvStatus" style="margin-right:auto; color:var(--accent); align-self:center; font-size:0.8rem;"></span>
                  <button id="btnKvDelete" class="danger">Delete Key</button>
                  <button id="btnKvPut" class="primary">Put / Update</button>

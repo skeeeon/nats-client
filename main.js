@@ -6,35 +6,50 @@ import * as nats from "./nats-client.js";
 // --- INIT ---
 const savedUrl = localStorage.getItem("nats_url");
 if (savedUrl) els.url.value = savedUrl;
-const savedPubSubj = localStorage.getItem("nats_last_pub_subject");
-if (savedPubSubj) els.pubSubject.value = savedPubSubj;
 
 // --- EVENT LISTENERS ---
 
-// 1. CONNECT / DISCONNECT TOGGLE
+// 1. CONNECT
 els.btnConnect.addEventListener("click", async () => {
-  // A. DISCONNECT FLOW
   if (nats.isConnected()) {
     try {
-      await nats.disconnect();
       ui.setConnectionState(false);
       ui.showToast("Disconnected", "info");
+      await nats.disconnect();
     } catch (err) {
       ui.showToast(`Error disconnecting: ${err.message}`, "error");
     }
     return; 
   }
 
-  // B. CONNECT FLOW
   try {
     localStorage.setItem("nats_url", els.url.value);
     els.statusText.innerText = "Connecting...";
     
-    const file = els.creds.files.length > 0 ? els.creds.files[0] : null;
-    await nats.connectToNats(els.url.value, file);
+    // Gather Auth Options
+    const authOptions = {
+        credsFile: els.creds.files.length > 0 ? els.creds.files[0] : null,
+        user: els.authUser.value.trim(),
+        pass: els.authPass.value.trim(),
+        token: els.authToken.value.trim()
+    };
+    
+    await nats.connectToNats(els.url.value, authOptions, (err) => {
+      ui.setConnectionState(false);
+      if (err) {
+        ui.showToast(`Connection Lost: ${err.message}`, "error");
+        els.statusText.innerText = "Error";
+        els.statusText.style.color = "#d32f2f";
+      }
+    });
 
     ui.setConnectionState(true);
     ui.showToast("Connected to NATS", "success");
+
+    if (els.tabKv.classList.contains('active')) {
+      loadKvBucketsWrapper();
+    }
+
   } catch (err) {
     els.statusText.innerText = "Error";
     els.statusText.style.color = "#d32f2f";
@@ -45,17 +60,10 @@ els.btnConnect.addEventListener("click", async () => {
 // 2. INFO MODAL
 els.btnInfo.addEventListener("click", () => {
   const info = nats.getServerInfo();
-  if (info) {
-    els.serverInfoPre.innerText = JSON.stringify(info, null, 2);
-  } else {
-    els.serverInfoPre.innerText = "Not connected.";
-  }
+  els.serverInfoPre.innerText = info ? JSON.stringify(info, null, 2) : "Not connected.";
   els.infoModal.style.display = "flex";
 });
-
-els.btnCloseModal.addEventListener("click", () => {
-  els.infoModal.style.display = "none";
-});
+els.btnCloseModal.addEventListener("click", () => els.infoModal.style.display = "none");
 
 // 3. TABS
 els.tabMsg.onclick = () => ui.switchTab('msg');
@@ -71,7 +79,6 @@ els.btnSub.addEventListener("click", () => {
   try {
     utils.addToHistory(subj);
     const { id, subject, size } = nats.subscribe(subj);
-    
     const li = document.createElement("li");
     li.id = `sub-li-${id}`;
     li.innerHTML = `<span>${subject}</span><button class="danger" onclick="window.unsubscribe(${id})">X</button>`;
@@ -79,9 +86,7 @@ els.btnSub.addEventListener("click", () => {
     els.subCount.innerText = `(${size})`;
     els.subSubject.value = "";
     ui.showToast(`Subscribed to ${subject}`, "success");
-  } catch (err) {
-    ui.showToast(err.message, "error");
-  }
+  } catch (err) { ui.showToast(err.message, "error"); }
 });
 
 window.unsubscribe = (id) => {
@@ -91,42 +96,29 @@ window.unsubscribe = (id) => {
   els.subCount.innerText = `(${size})`;
 };
 
-// 5. PUBLISH
+// 5. PUBLISH & REQUEST
 els.btnPub.addEventListener("click", () => {
   const subj = els.pubSubject.value.trim();
-  const payload = els.pubPayload.value;
   if (!subj) return;
-
   try {
     utils.addToHistory(subj);
-    localStorage.setItem("nats_last_pub_subject", subj);
-    
-    nats.publish(subj, payload, els.pubHeaders.value);
-    
+    nats.publish(subj, els.pubPayload.value, els.pubHeaders.value);
     const originalText = els.btnPub.innerText;
     els.btnPub.innerText = "✓";
     setTimeout(() => els.btnPub.innerText = "Pub", 1000);
-  } catch (err) {
-    ui.showToast(err.message, "error");
-  }
+  } catch (err) { ui.showToast(err.message, "error"); }
 });
 
-// 6. REQUEST
 els.btnReq.addEventListener("click", async () => {
   const subj = els.pubSubject.value.trim();
-  const payload = els.pubPayload.value;
   const timeout = parseInt(els.reqTimeout.value) || 2000;
-  
   try {
     utils.addToHistory(subj);
     els.btnReq.disabled = true;
-    const msg = await nats.request(subj, payload, els.pubHeaders.value, timeout);
+    const msg = await nats.request(subj, els.pubPayload.value, els.pubHeaders.value, timeout);
     ui.renderMessage(msg.subject, msg.data, true, msg.headers);
-  } catch (err) {
-    ui.showToast(err.message, "error");
-  } finally {
-    els.btnReq.disabled = false;
-  }
+  } catch (err) { ui.showToast(err.message, "error"); }
+  finally { els.btnReq.disabled = false; }
 });
 
 // --- UI HELPERS ---
@@ -138,79 +130,124 @@ els.kvValueInput.addEventListener("blur", () => utils.beautify(els.kvValueInput)
 els.btnClear.addEventListener("click", () => els.messages.innerHTML = "");
 els.logFilter.addEventListener("keyup", (e) => ui.filterLogs(e.target.value));
 els.btnPause.addEventListener("click", ui.toggleLogPause);
-
 els.btnHeaderToggle.addEventListener("click", () => {
   const isHidden = els.headerContainer.style.display === "none";
   els.headerContainer.style.display = isHidden ? "block" : "none";
   els.btnHeaderToggle.innerText = isHidden ? "▼ Headers (Optional)" : "► Add Headers (Optional)";
 });
 
-// --- KV LOGIC WRAPPERS ---
+// --- KV LOGIC ---
+
+// CREATE
+els.btnKvCreate.addEventListener("click", async () => {
+    const name = prompt("Enter new bucket name:");
+    if(!name) return;
+    try {
+        await nats.createKvBucket(name);
+        ui.showToast(`Bucket ${name} created`, "success");
+        loadKvBucketsWrapper();
+    } catch(e) { ui.showToast(e.message, "error"); }
+});
+
+// LOAD BUCKETS
 async function loadKvBucketsWrapper() {
   try {
     const list = await nats.getKvBuckets();
     els.kvBucketSelect.innerHTML = '<option value="">-- Select a Bucket --</option>';
-    if (list.length === 0) ui.setKvStatus("No KV Buckets found.");
-    else {
-      list.sort().forEach(b => {
-        const opt = document.createElement("option");
-        opt.value = b;
-        opt.innerText = b;
-        els.kvBucketSelect.appendChild(opt);
-      });
-      ui.setKvStatus(`Loaded ${list.length} buckets.`);
-    }
-  } catch (e) { console.error(e); ui.setKvStatus("Error loading buckets", true); }
+    list.sort().forEach(b => {
+      const opt = document.createElement("option");
+      opt.value = b;
+      opt.innerText = b;
+      els.kvBucketSelect.appendChild(opt);
+    });
+    ui.setKvStatus(`Loaded ${list.length} buckets.`);
+  } catch (e) { ui.setKvStatus("Error loading buckets", true); }
 }
 els.btnKvRefresh.addEventListener("click", loadKvBucketsWrapper);
 
+// SELECT BUCKET & WATCH
+const kvKeysMap = new Set(); // Local cache of keys to handle updates efficiently
+
 els.kvBucketSelect.addEventListener("change", async () => {
   const bucket = els.kvBucketSelect.value;
+  els.kvKeyList.innerHTML = '';
+  kvKeysMap.clear();
+  
   if (!bucket) return;
+  
   try {
     await nats.openKvBucket(bucket);
-    loadKeysWrapper();
+    ui.setKvStatus(`Watching ${bucket}...`);
+    
+    // Start Watching
+    nats.watchKvBucket((key, op) => {
+        if (op === "DEL" || op === "PURGE") {
+             kvKeysMap.delete(key);
+             const el = document.getElementById(`kv-key-${key}`);
+             if(el) el.remove();
+        } else {
+            if(!kvKeysMap.has(key)) {
+                kvKeysMap.add(key);
+                const div = document.createElement("div");
+                div.className = "kv-key";
+                div.id = `kv-key-${key}`;
+                div.innerText = key;
+                div.onclick = () => selectKeyWrapper(key, div);
+                els.kvKeyList.appendChild(div);
+            }
+        }
+    });
+
   } catch (e) { ui.setKvStatus(e.message, true); }
 });
 
-els.btnKvLoadKeys.addEventListener("click", loadKeysWrapper);
-
-async function loadKeysWrapper() {
-  els.kvKeyList.innerHTML = '<div class="kv-empty">Loading...</div>';
-  try {
-    const keys = await nats.getKvKeys();
-    if (keys.length === 0) {
-      els.kvKeyList.innerHTML = '<div class="kv-empty">No keys found</div>';
-      return;
-    }
-    els.kvKeyList.innerHTML = '';
-    keys.sort().forEach(k => {
-      const div = document.createElement("div");
-      div.className = "kv-key";
-      div.innerText = k;
-      div.onclick = () => selectKeyWrapper(k, div);
-      els.kvKeyList.appendChild(div);
-    });
-    ui.setKvStatus(`Loaded ${keys.length} keys.`);
-  } catch (e) { console.error(e); els.kvKeyList.innerHTML = '<div class="kv-empty">Error</div>'; }
-}
-
+// SELECT KEY & GET HISTORY
 async function selectKeyWrapper(key, uiEl) {
   document.querySelectorAll(".kv-key").forEach(e => e.classList.remove("active"));
   if (uiEl) uiEl.classList.add("active");
+  else {
+      const existing = document.getElementById(`kv-key-${key}`);
+      if(existing) existing.classList.add("active");
+  }
+
   els.kvKeyInput.value = key;
   els.kvValueInput.value = "Loading...";
+  els.kvHistoryList.innerHTML = "Loading history...";
+
   try {
+    // Get Current
     const res = await nats.getKvValue(key);
     if (res) {
       els.kvValueInput.value = res.value;
       utils.beautify(els.kvValueInput);
-      ui.setKvStatus(`Loaded key '${key}' (Rev: ${res.revision})`);
+      ui.setKvStatus(`Loaded '${key}' (Rev: ${res.revision})`);
     } else {
       els.kvValueInput.value = "";
       ui.setKvStatus("Key not found", true);
     }
-  } catch (e) { els.kvValueInput.value = ""; ui.setKvStatus(e.message, true); }
+
+    // Get History
+    const hist = await nats.getKvHistory(key);
+    els.kvHistoryList.innerHTML = "";
+    if(hist.length === 0) els.kvHistoryList.innerHTML = "No history found.";
+    
+    hist.forEach(h => {
+        const row = document.createElement("div");
+        row.style.borderBottom = "1px solid #333";
+        row.style.padding = "4px";
+        row.innerHTML = `
+            <span style="color:var(--accent)">Rev ${h.revision}</span> 
+            <span class="badge" style="font-size:0.7em">${h.operation}</span>
+            <span style="float:right; color:#666;">${h.created.toLocaleTimeString()}</span>
+        `;
+        row.title = h.value; // Tooltip shows value
+        els.kvHistoryList.appendChild(row);
+    });
+
+  } catch (e) { 
+      els.kvValueInput.value = ""; 
+      ui.setKvStatus(e.message, true); 
+  }
 }
 
 els.btnKvGet.addEventListener("click", () => selectKeyWrapper(els.kvKeyInput.value));
@@ -222,9 +259,10 @@ els.btnKvPut.addEventListener("click", async () => {
   try {
     await nats.putKvValue(key, val);
     ui.setKvStatus(`Saved '${key}'`);
-    const existing = Array.from(document.querySelectorAll(".kv-key")).map(e => e.innerText);
-    if (!existing.includes(key)) loadKeysWrapper();
     ui.showToast("Key Saved", "success");
+    // No need to manually reload keys, watcher handles it!
+    // Refresh history though
+    selectKeyWrapper(key);
   } catch (e) { ui.setKvStatus(e.message, true); ui.showToast(e.message, "error"); }
 });
 
@@ -235,7 +273,7 @@ els.btnKvDelete.addEventListener("click", async () => {
     await nats.deleteKvValue(key);
     ui.setKvStatus(`Deleted '${key}'`);
     els.kvValueInput.value = "";
-    loadKeysWrapper();
+    els.kvHistoryList.innerHTML = "Key deleted.";
     ui.showToast("Key Deleted", "info");
   } catch (e) { ui.setKvStatus(e.message, true); ui.showToast(e.message, "error"); }
 });

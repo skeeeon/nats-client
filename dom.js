@@ -5,6 +5,11 @@ export const els = {
   // Connection & Info
   url: document.getElementById("serverUrl"),
   creds: document.getElementById("credsFile"),
+  // Auth Inputs
+  authUser: document.getElementById("authUser"),
+  authPass: document.getElementById("authPass"),
+  authToken: document.getElementById("authToken"),
+  
   btnConnect: document.getElementById("btnConnect"),
   statusText: document.getElementById("statusText"),
   statusDot: document.getElementById("statusDot"),
@@ -49,11 +54,12 @@ export const els = {
 
   // KV Store
   btnKvRefresh: document.getElementById("btnKvRefresh"),
+  btnKvCreate: document.getElementById("btnKvCreate"),
   kvBucketSelect: document.getElementById("kvBucketSelect"),
   kvKeyList: document.getElementById("kvKeyList"),
-  btnKvLoadKeys: document.getElementById("btnKvLoadKeys"),
   kvKeyInput: document.getElementById("kvKeyInput"),
   kvValueInput: document.getElementById("kvValueInput"),
+  kvHistoryList: document.getElementById("kvHistoryList"), // New
   btnKvGet: document.getElementById("btnKvGet"),
   btnKvPut: document.getElementById("btnKvPut"),
   btnKvDelete: document.getElementById("btnKvDelete"),
