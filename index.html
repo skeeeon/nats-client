@@ -36,7 +36,14 @@
     /* --- LAYOUT --- */
     .main-layout { display: grid; grid-template-columns: 320px 1fr; gap: 15px; height: 100%; overflow: hidden; }
     .sidebar, .content { display: flex; flex-direction: column; gap: 15px; height: 100%; min-height: 0; overflow: hidden; }
+    
+    /* Generic Box */
     .box { background: var(--panel); border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; flex-direction: column; flex-shrink: 0; }
+    
+    /* Panel Content Wrapper (Holds Boxes) */
+    .panel-content { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 15px; overflow: hidden; }
+
+    /* Growable Box (Logs/Subs) */
     .box-grow { flex: 1; min-height: 0; overflow: hidden; }
 
     .box-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -74,9 +81,8 @@
     button.accent { background: var(--accent); color: #fff; }
     button.danger { background: var(--danger); padding: 4px 8px; font-size: 0.7rem; }
     button.icon-btn { padding: 8px 12px; font-size: 1.1rem; line-height: 1; }
-    button.sm-btn { padding: 4px 8px; font-size: 1rem; background: transparent; border: 1px solid #444; }
+    button.sm-btn { padding: 4px 8px; font-size: 0.7rem; background: transparent; border: 1px solid #444; }
     
-    /* Pause Button State */
     button.paused { background: var(--warn); color: #000; border-color: var(--warn); }
 
     .copy-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 0.75rem; margin-left: auto; }
@@ -116,11 +122,18 @@
     .kv-key.active { background: #333; border-left: 3px solid var(--warn); }
     .kv-empty { color: var(--muted); font-style: italic; padding: 20px; text-align: center; }
 
+    /* --- MOBILE RESPONSIVENESS --- */
     @media (max-width: 768px) {
       body { height: auto; overflow-y: auto; padding: 10px; }
       .main-layout { grid-template-columns: 1fr; height: auto; overflow: visible; }
       .sidebar, .content { height: auto; overflow: visible; }
-      .box-grow { height: 400px; min-height: 400px; }
+      
+      /* Fix: Reset wrapper styles so they don't try to flex-fill the window */
+      .panel-content { display: block; height: auto; overflow: visible; }
+      
+      /* Fix: Force fixed height on log box so internal scrolling works */
+      .box-grow { flex: none; height: 400px; min-height: 400px; }
+      
       .pub-row { flex-direction: column; }
       .pub-actions { width: 100%; display: flex; flex-direction: row; gap: 10px; margin-top: 5px; align-items: center; }
       .pub-actions button { flex: 1; }
@@ -152,8 +165,8 @@
         <div id="statusDot" class="status-dot"></div>
         <h1 style="flex-grow:1">NATS 🪨</h1>
         <div style="text-align:right;">
-          <div id="statusText" style="font-size:1rem; color:var(--muted);">Disconnected</div>
-          <div id="rttLabel" style="font-size:0.75rem; color:var(--muted); opacity:0;">RTT: -</div>
+          <div id="statusText" style="font-size:0.75rem; color:var(--muted);">Disconnected</div>
+          <div id="rttLabel" style="font-size:0.65rem; color:var(--muted); opacity:0;">RTT: -</div>
         </div>
         <button id="btnInfo" class="sm-btn" style="margin-left:8px; padding:2px 6px;">i</button>
       </div>
@@ -190,7 +203,7 @@
       </div>
 
       <!-- MESSAGING PANEL -->
-      <div id="panelMsg" class="full-h" style="display:flex; flex-direction:column; gap:15px;">
+      <div id="panelMsg" class="panel-content">
         <div class="box">
           <div class="box-header"><h3>Publish / Request</h3></div>
           <div style="display: flex; gap: 10px;" class="pub-row">
@@ -221,7 +234,6 @@
             <h3 style="border:none; padding:0;">Message Log</h3>
             <div style="display:flex; gap: 10px; align-items: center;">
               <input type="text" id="logFilter" class="filter-input" placeholder="Filter logs..." />
-              <!-- PAUSE BUTTON ADDED -->
               <button id="btnPause" class="sm-btn" style="width: 60px;">Pause</button>
               <button id="btnClear" class="sm-btn">Clear</button>
             </div>
@@ -231,36 +243,38 @@
       </div>
 
       <!-- KV PANEL -->
-      <div id="panelKv" class="box box-grow" style="display:none;">
-        <div class="box-header">
-          <h3>JetStream KV Store</h3>
-          <button id="btnKvRefresh" class="sm-btn">Refresh Buckets</button>
-        </div>
-        <div style="margin-bottom: 10px;">
-          <label>Select Bucket</label>
-          <select id="kvBucketSelect"><option value="">-- Select a Bucket --</option></select>
-        </div>
-        <div class="kv-layout">
-          <div class="kv-list">
-            <label>Keys <button id="btnKvLoadKeys" class="sm-btn" style="float:right; padding:1px 5px;">↻</button></label>
-            <div id="kvKeyList"><div class="kv-empty">Select a bucket to view keys</div></div>
+      <div id="panelKv" class="panel-content" style="display:none;">
+        <div class="box box-grow">
+          <div class="box-header">
+            <h3>JetStream KV Store</h3>
+            <button id="btnKvRefresh" class="sm-btn">Refresh Buckets</button>
           </div>
-          <div class="kv-editor">
-            <div>
-              <label>Key Name</label>
-              <div style="display:flex; gap:5px;">
-                <input type="text" id="kvKeyInput" placeholder="Key" />
-                <button id="btnKvGet" class="accent">Get</button>
+          <div style="margin-bottom: 10px;">
+            <label>Select Bucket</label>
+            <select id="kvBucketSelect"><option value="">-- Select a Bucket --</option></select>
+          </div>
+          <div class="kv-layout">
+            <div class="kv-list">
+              <label>Keys <button id="btnKvLoadKeys" class="sm-btn" style="float:right; padding:1px 5px;">↻</button></label>
+              <div id="kvKeyList"><div class="kv-empty">Select a bucket to view keys</div></div>
+            </div>
+            <div class="kv-editor">
+              <div>
+                <label>Key Name</label>
+                <div style="display:flex; gap:5px;">
+                  <input type="text" id="kvKeyInput" placeholder="Key" />
+                  <button id="btnKvGet" class="accent">Get</button>
+                </div>
               </div>
-            </div>
-            <div style="flex-grow:1; display:flex; flex-direction:column;">
-              <label>Value</label>
-              <textarea id="kvValueInput" style="flex-grow:1; margin-bottom:0;" placeholder="Value"></textarea>
-            </div>
-            <div style="display:flex; gap:10px; justify-content:flex-end;">
-               <span id="kvStatus" style="margin-right:auto; color:var(--accent); align-self:center; font-size:0.8rem;"></span>
-               <button id="btnKvDelete" class="danger">Delete Key</button>
-               <button id="btnKvPut" class="primary">Put / Update</button>
+              <div style="flex-grow:1; display:flex; flex-direction:column;">
+                <label>Value</label>
+                <textarea id="kvValueInput" style="flex-grow:1; margin-bottom:0;" placeholder="Value"></textarea>
+              </div>
+              <div style="display:flex; gap:10px; justify-content:flex-end;">
+                 <span id="kvStatus" style="margin-right:auto; color:var(--accent); align-self:center; font-size:0.8rem;"></span>
+                 <button id="btnKvDelete" class="danger">Delete Key</button>
+                 <button id="btnKvPut" class="primary">Put / Update</button>
+              </div>
             </div>
           </div>
         </div>
