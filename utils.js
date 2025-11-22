@@ -1,4 +1,16 @@
-// --- HISTORY MANAGEMENT ---
+// ============================================================================
+// CONFIGURATION CONSTANTS
+// ============================================================================
+
+// Maximum items in subject/URL history (stored in localStorage)
+// Keep UI snappy - more than 10 gets unwieldy to scan in dropdown
+const MAX_SUBJECT_HISTORY = 10;
+const MAX_URL_HISTORY = 5;
+
+// ============================================================================
+// HISTORY MANAGEMENT
+// ============================================================================
+
 let subjectHistory = JSON.parse(localStorage.getItem("nats_subject_history") || "[]");
 let urlHistory = JSON.parse(localStorage.getItem("nats_url_history") || "[]");
 
@@ -9,7 +21,7 @@ export function addSubjectHistory(subject) {
   if (!subject) return subjectHistory;
   subjectHistory = subjectHistory.filter(s => s !== subject);
   subjectHistory.unshift(subject);
-  if (subjectHistory.length > 10) subjectHistory.pop();
+  if (subjectHistory.length > MAX_SUBJECT_HISTORY) subjectHistory.pop();
   localStorage.setItem("nats_subject_history", JSON.stringify(subjectHistory));
   return subjectHistory;
 }
@@ -18,12 +30,15 @@ export function addUrlHistory(url) {
   if (!url) return urlHistory;
   urlHistory = urlHistory.filter(u => u !== url);
   urlHistory.unshift(url);
-  if (urlHistory.length > 5) urlHistory.pop();
+  if (urlHistory.length > MAX_URL_HISTORY) urlHistory.pop();
   localStorage.setItem("nats_url_history", JSON.stringify(urlHistory));
   return urlHistory;
 }
 
-// --- JSON UTILS ---
+// ============================================================================
+// JSON UTILITIES
+// ============================================================================
+
 export function beautify(el) {
   const val = el.value.trim();
   if (!val) return;
@@ -31,7 +46,7 @@ export function beautify(el) {
     const obj = JSON.parse(val); 
     el.value = JSON.stringify(obj, null, 2); 
   } catch (e) { 
-    // Ignore invalid JSON
+    // Ignore invalid JSON - user might still be typing
   }
 }
 
@@ -51,6 +66,10 @@ export function validateJsonInput(el) {
   }
 }
 
+// ============================================================================
+// FORMATTING UTILITIES
+// ============================================================================
+
 export function formatBytes(bytes, decimals = 2) {
     if (!+bytes) return '0 Bytes';
     const k = 1024;
@@ -69,6 +88,10 @@ export function escapeHtml(str) {
               .replace(/'/g, '&#039;');
 }
 
+/**
+ * Syntax highlight JSON for display
+ * Returns HTML string with color-coded spans
+ */
 export function syntaxHighlight(json) {
     if (typeof json !== 'string') {
       json = JSON.stringify(json, null, 2);
@@ -90,9 +113,16 @@ export function syntaxHighlight(json) {
       }
       return '<span class="' + cls + '">' + match + '</span>';
     });
-  }
+}
 
-// --- GLOBAL HELPERS ---
+// ============================================================================
+// GLOBAL HELPERS
+// ============================================================================
+
+/**
+ * Copy element text to clipboard
+ * Used by onclick handlers in rendered HTML
+ */
 window.copyToClipboard = (id) => {
   const el = document.getElementById(id);
   if (el) navigator.clipboard.writeText(el.innerText);

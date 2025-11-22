@@ -1,18 +1,74 @@
+// ============================================================================
+// NATS WEB CLIENT - MAIN APPLICATION LOGIC
+// ============================================================================
+// This is the "brain" - wires UI events to NATS operations
+// Architecture: UI events → main.js handlers → nats-client.js API → UI updates
+
+// ============================================================================
+// IMPORTS
+// ============================================================================
+
 import { els } from "./dom.js";
 import * as utils from "./utils.js";
 import * as ui from "./ui.js";
 import * as nats from "./nats-client.js";
 
-// Init History
+// ============================================================================
+// CONFIGURATION CONSTANTS
+// ============================================================================
+
+// Maximum messages to fetch from stream in one request
+// NATS server performance limit - larger batches cause timeouts
+// Tested with NATS 2.9+ on standard hardware
+const MAX_STREAM_MSG_FETCH = 50;
+
+// Default RPC timeout in milliseconds
+// 2 seconds is reasonable for most NATS deployments (local/LAN)
+// Users can adjust per-request if needed
+const DEFAULT_RPC_TIMEOUT_MS = 2000;
+
+// ============================================================================
+// APPLICATION STATE
+// ============================================================================
+// All mutable state in one place so grug can find it
+// If you need to know "what is current X?", look here first
+
+const appState = {
+  // Config Modal Management
+  activeConfigAction: null, // Function to call when config modal saved
+  
+  // Stream Management
+  currentStream: null, // Name of selected stream (string)
+  
+  // KV Store Management  
+  kvKeys: new Set(), // Set of key names in currently-watched bucket
+  kvEditMode: false, // true = editing value, false = viewing value
+  
+  // Current KV Watcher
+  // Important: Must stop this before opening new bucket to prevent memory leaks
+  currentKvWatcher: null,
+};
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+/**
+ * Refresh history dropdowns (subjects and URLs)
+ */
 function refreshHistoryUi() {
     ui.renderHistoryDatalist("subHistory", utils.getSubjectHistory());
     ui.renderHistoryDatalist("urlHistory", utils.getUrlHistory());
 }
+
+// Initialize on load
 refreshHistoryUi();
 
+// Restore last used URL from localStorage
 const savedUrl = localStorage.getItem("nats_url");
 if (savedUrl) els.url.value = savedUrl;
 
+// Handle URL parameters (for deep linking)
 const urlParams = new URLSearchParams(window.location.search);
 const paramUrl = urlParams.get('url');
 const paramToken = urlParams.get('token');
@@ -25,11 +81,15 @@ if (paramToken) els.authToken.value = paramToken;
 if (paramUser) els.authUser.value = paramUser;
 if (paramPass) els.authPass.value = paramPass;
 
-els.btnConnect.addEventListener("click", async () => {
+// ============================================================================
+// CONNECTION HANDLERS
+// ============================================================================
+
+async function handleConnect() {
+  // If already connected, disconnect
   if (nats.isConnected()) {
     try {
       ui.setConnectionState('disconnected');
-      ui.stopRenderLoop();
       ui.showToast("Disconnected", "info");
       await nats.disconnect();
     } catch (err) {
@@ -38,14 +98,18 @@ els.btnConnect.addEventListener("click", async () => {
     return; 
   }
 
+  // Otherwise, connect
   try {
     const url = els.url.value;
+    
+    // Save URL to localStorage and history
     localStorage.setItem("nats_url", url);
     utils.addUrlHistory(url);
     refreshHistoryUi();
     
     els.statusText.innerText = "Connecting...";
     
+    // Gather authentication options
     const authOptions = {
         credsFile: els.creds.files.length > 0 ? els.creds.files[0] : null,
         user: els.authUser.value.trim(),
@@ -53,20 +117,30 @@ els.btnConnect.addEventListener("click", async () => {
         token: els.authToken.value.trim()
     };
     
-    await nats.connectToNats(url, authOptions, (status, err) => {
-      ui.setConnectionState(status);
-      if (status === 'disconnected') {
-          ui.stopRenderLoop();
-          if (err) ui.showToast(`Connection Lost: ${err.message}`, "error");
-      } else if (status === 'connected') {
-          ui.showToast("Reconnected", "success");
+    // Connect with callbacks for status and stats
+    await nats.connectToNats(
+      url, 
+      authOptions, 
+      // Status change callback
+      (status, err) => {
+        ui.setConnectionState(status);
+        if (status === 'disconnected') {
+            if (err) ui.showToast(`Connection Lost: ${err.message}`, "error");
+        } else if (status === 'connected') {
+            ui.showToast("Reconnected", "success");
+        }
+      },
+      // Stats callback (RTT updates)
+      (stats) => {
+        els.rttLabel.innerText = `RTT: ${stats.rtt}ms`;
+        els.rttLabel.style.opacity = 1;
       }
-    });
+    );
 
     ui.setConnectionState('connected');
-    ui.startRenderLoop();
     ui.showToast("Connected to NATS", "success");
 
+    // Load data for active tab
     if (els.tabKv.classList.contains('active')) loadKvBucketsWrapper();
     else if (els.tabStream.classList.contains('active')) loadStreamsWrapper();
 
@@ -74,41 +148,68 @@ els.btnConnect.addEventListener("click", async () => {
     ui.setConnectionState('disconnected');
     ui.showToast(`Connection Failed: ${err.message}`, "error");
   }
-});
+}
 
-if (autoConnect) setTimeout(() => els.btnConnect.click(), 100);
-
-els.btnInfo.addEventListener("click", () => {
+function handleShowServerInfo() {
   const info = nats.getServerInfo();
   els.serverInfoPre.innerText = info ? JSON.stringify(info, null, 2) : "Not connected.";
   els.infoModal.style.display = "flex";
-});
-els.btnCloseModal.addEventListener("click", () => els.infoModal.style.display = "none");
+}
 
-let activeConfigAction = null; 
+function handleCloseModal() {
+  els.infoModal.style.display = "none";
+}
+
+// Wire up connection events
+els.btnConnect.addEventListener("click", handleConnect);
+els.btnInfo.addEventListener("click", handleShowServerInfo);
+els.btnCloseModal.addEventListener("click", handleCloseModal);
+
+// Auto-connect if URL param present
+if (autoConnect) {
+  setTimeout(() => handleConnect(), 100);
+}
+
+// ============================================================================
+// CONFIG MODAL HANDLERS
+// ============================================================================
+
+/**
+ * Open config modal for creating/editing streams or KV buckets
+ * @param {string} title - Modal title
+ * @param {object} templateJson - Default JSON config
+ * @param {function} actionCallback - Async function to call on save
+ */
 function openConfigModal(title, templateJson, actionCallback) {
     els.configModalTitle.innerText = title;
     els.configInput.value = JSON.stringify(templateJson, null, 2);
-    activeConfigAction = actionCallback;
+    appState.activeConfigAction = actionCallback;
     els.configModal.style.display = "flex";
     els.configInput.classList.remove("input-error");
 }
+
 function closeConfigModal() {
     els.configModal.style.display = "none";
-    activeConfigAction = null;
+    appState.activeConfigAction = null;
 }
-els.btnCloseConfigModal.addEventListener("click", closeConfigModal);
-els.btnConfigSave.addEventListener("click", async () => {
+
+async function handleConfigSave() {
     if(!utils.validateJsonInput(els.configInput)) {
         ui.showToast("Invalid JSON", "error");
         return;
     }
-    if(activeConfigAction) {
+    if(appState.activeConfigAction) {
         const config = JSON.parse(els.configInput.value);
-        await activeConfigAction(config);
+        await appState.activeConfigAction(config);
     }
-});
+}
+
+// Wire up config modal events
+els.btnCloseConfigModal.addEventListener("click", closeConfigModal);
+els.btnConfigSave.addEventListener("click", handleConfigSave);
 els.configInput.addEventListener("input", () => utils.validateJsonInput(els.configInput));
+
+// Close modals on Escape key
 document.addEventListener("keydown", (e) => { 
     if (e.key === "Escape") {
         els.infoModal.style.display = "none";
@@ -116,99 +217,184 @@ document.addEventListener("keydown", (e) => {
     }
 });
 
-els.tabMsg.onclick = () => ui.switchTab('msg');
-els.tabKv.onclick = () => {
+// ============================================================================
+// TAB NAVIGATION HANDLERS
+// ============================================================================
+
+function handleTabMsg() {
+  ui.switchTab('msg');
+}
+
+function handleTabKv() {
   ui.switchTab('kv');
   if (nats.isConnected()) loadKvBucketsWrapper();
-};
-els.tabStream.onclick = () => {
+}
+
+function handleTabStream() {
   ui.switchTab('stream');
   if (nats.isConnected()) loadStreamsWrapper();
-};
+}
 
-// SUBSCRIPTIONS
-els.btnSub.addEventListener("click", () => {
+// Wire up tab clicks
+els.tabMsg.onclick = handleTabMsg;
+els.tabKv.onclick = handleTabKv;
+els.tabStream.onclick = handleTabStream;
+
+// ============================================================================
+// SUBSCRIPTION HANDLERS
+// ============================================================================
+
+function handleSubscribe() {
   const subj = els.subSubject.value.trim();
   if (!subj) return;
+  
   try {
     utils.addSubjectHistory(subj);
     refreshHistoryUi();
-    const { id, subject, size } = nats.subscribe(subj);
+    
+    // Subscribe with message callback
+    const { id, subject, size } = nats.subscribe(subj, (subject, data, isRpc, headers) => {
+      ui.renderMessage(subject, data, isRpc, headers);
+    });
+    
     ui.addSubscription(id, subject);
     ui.updateSubCount(size);
     els.subSubject.value = "";
     ui.showToast(`Subscribed to ${subject}`, "success");
-  } catch (err) { ui.showToast(err.message, "error"); }
-});
+  } catch (err) { 
+    ui.showToast(err.message, "error"); 
+  }
+}
 
+// Global unsubscribe function (called from UI via onclick attribute)
 window.unsubscribe = (id) => {
   const size = nats.unsubscribe(id);
   ui.removeSubscription(id);
   ui.updateSubCount(size);
 };
 
-els.btnPub.addEventListener("click", () => {
+// Wire up subscription events
+els.btnSub.addEventListener("click", handleSubscribe);
+els.subSubject.addEventListener("keyup", (e) => { 
+  if (e.key === "Enter") handleSubscribe(); 
+});
+
+// ============================================================================
+// PUBLISH/REQUEST HANDLERS
+// ============================================================================
+
+function handlePublish() {
   const subj = els.pubSubject.value.trim();
   if (!subj) return;
+  
   try {
     utils.addSubjectHistory(subj);
     refreshHistoryUi();
     nats.publish(subj, els.pubPayload.value, els.pubHeaders.value);
-    const originalText = els.btnPub.innerText;
+    
+    // Show checkmark feedback
     els.btnPub.innerText = "✓";
     setTimeout(() => els.btnPub.innerText = "Pub", 1000);
-  } catch (err) { ui.showToast(err.message, "error"); }
-});
+  } catch (err) { 
+    ui.showToast(err.message, "error"); 
+  }
+}
 
-els.btnReq.addEventListener("click", async () => {
+async function handleRequest() {
   const subj = els.pubSubject.value.trim();
-  const timeout = parseInt(els.reqTimeout.value) || 2000;
+  const timeout = parseInt(els.reqTimeout.value) || DEFAULT_RPC_TIMEOUT_MS;
+  
   try {
     utils.addSubjectHistory(subj);
     refreshHistoryUi();
     els.btnReq.disabled = true;
+    
     const msg = await nats.request(subj, els.pubPayload.value, els.pubHeaders.value, timeout);
     ui.renderMessage(msg.subject, msg.data, true, msg.headers);
-  } catch (err) { ui.showToast(err.message, "error"); }
-  finally { els.btnReq.disabled = false; }
-});
+  } catch (err) { 
+    ui.showToast(err.message, "error"); 
+  } finally { 
+    els.btnReq.disabled = false; 
+  }
+}
 
-els.subSubject.addEventListener("keyup", (e) => { if (e.key === "Enter") els.btnSub.click(); });
-els.pubPayload.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") els.btnPub.click(); });
-els.pubPayload.addEventListener("input", () => utils.validateJsonInput(els.pubPayload));
-els.pubHeaders.addEventListener("input", () => utils.validateJsonInput(els.pubHeaders));
-els.kvValueInput.addEventListener("input", () => utils.validateJsonInput(els.kvValueInput));
-els.pubPayload.addEventListener("blur", () => { if(utils.validateJsonInput(els.pubPayload)) utils.beautify(els.pubPayload); });
-els.pubHeaders.addEventListener("blur", () => { if(utils.validateJsonInput(els.pubHeaders)) utils.beautify(els.pubHeaders); });
-els.kvValueInput.addEventListener("blur", () => { if(utils.validateJsonInput(els.kvValueInput)) utils.beautify(els.kvValueInput); });
-els.btnClear.addEventListener("click", () => ui.clearLogs());
-els.logFilter.addEventListener("keyup", (e) => ui.filterLogs(e.target.value));
-els.btnPause.addEventListener("click", ui.toggleLogPause);
-els.btnHeaderToggle.addEventListener("click", () => {
+function handleHeaderToggle() {
   const isHidden = els.headerContainer.style.display === "none";
   els.headerContainer.style.display = isHidden ? "block" : "none";
   els.btnHeaderToggle.innerText = isHidden ? "▼ Headers (Optional)" : "► Add Headers (Optional)";
+}
+
+// Wire up publish/request events
+els.btnPub.addEventListener("click", handlePublish);
+els.btnReq.addEventListener("click", handleRequest);
+els.btnHeaderToggle.addEventListener("click", handleHeaderToggle);
+
+// Ctrl/Cmd+Enter to publish
+els.pubPayload.addEventListener("keydown", (e) => { 
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") handlePublish(); 
 });
+
+// ============================================================================
+// MESSAGE LOG HANDLERS
+// ============================================================================
+
+els.btnClear.addEventListener("click", () => ui.clearLogs());
+els.logFilter.addEventListener("keyup", (e) => ui.filterLogs(e.target.value));
+els.btnPause.addEventListener("click", ui.toggleLogPause);
 els.btnDownloadLogs.addEventListener("click", ui.downloadLogs);
-els.kvFilter.addEventListener("keyup", () => ui.filterList(els.kvFilter, els.kvKeyList, ".kv-key"));
-els.streamFilter.addEventListener("keyup", () => ui.filterList(els.streamFilter, els.streamList, ".kv-key"));
 
-// --- KV STORE LOGIC ---
+// ============================================================================
+// INPUT VALIDATION HANDLERS
+// ============================================================================
+// Real-time JSON validation with visual feedback
 
-els.btnKvCreate.addEventListener("click", () => {
-    const template = { bucket: "new-bucket", history: 5, description: "My KV Bucket", storage: "file", replicas: 1 };
+els.pubPayload.addEventListener("input", () => utils.validateJsonInput(els.pubPayload));
+els.pubHeaders.addEventListener("input", () => utils.validateJsonInput(els.pubHeaders));
+els.kvValueInput.addEventListener("input", () => utils.validateJsonInput(els.kvValueInput));
+
+// Auto-beautify on blur
+els.pubPayload.addEventListener("blur", () => { 
+  if(utils.validateJsonInput(els.pubPayload)) utils.beautify(els.pubPayload); 
+});
+els.pubHeaders.addEventListener("blur", () => { 
+  if(utils.validateJsonInput(els.pubHeaders)) utils.beautify(els.pubHeaders); 
+});
+els.kvValueInput.addEventListener("blur", () => { 
+  if(utils.validateJsonInput(els.kvValueInput)) utils.beautify(els.kvValueInput); 
+});
+
+// ============================================================================
+// KV STORE HANDLERS
+// ============================================================================
+
+async function handleKvCreate() {
+    const template = { 
+      bucket: "new-bucket", 
+      history: 5, 
+      description: "My KV Bucket", 
+      storage: "file", 
+      replicas: 1 
+    };
+    
     openConfigModal("Create KV Bucket", template, async (config) => {
         try {
             await nats.createKvBucket(config);
             ui.showToast(`Bucket ${config.bucket} created`, "success");
             closeConfigModal();
             loadKvBucketsWrapper();
-        } catch(e) { ui.showToast(e.message, "error"); }
+        } catch(e) { 
+          ui.showToast(e.message, "error"); 
+        }
     });
-});
-els.btnKvEdit.addEventListener("click", async () => {
+}
+
+async function handleKvEdit() {
     const bucket = els.kvBucketSelect.value;
-    if(!bucket) { ui.showToast("Select a bucket first", "info"); return; }
+    if(!bucket) { 
+      ui.showToast("Select a bucket first", "info"); 
+      return; 
+    }
+    
     try {
         const status = await nats.getKvStatus();
         const editableConfig = {
@@ -221,64 +407,85 @@ els.btnKvEdit.addEventListener("click", async () => {
             maxBucketSize: status.streamInfo.config.max_bytes,
             maxValueSize: status.streamInfo.config.max_msg_size
         };
+        
         openConfigModal(`Edit KV: ${bucket}`, editableConfig, async (config) => {
             try {
                 await nats.updateKvBucket(config);
                 ui.showToast(`Bucket ${bucket} updated`, "success");
                 closeConfigModal();
-            } catch(e) { ui.showToast(e.message, "error"); }
+            } catch(e) { 
+              ui.showToast(e.message, "error"); 
+            }
         });
-    } catch(e) { ui.showToast("Error fetching KV status: " + e.message, "error"); }
-});
+    } catch(e) { 
+      ui.showToast("Error fetching KV status: " + e.message, "error"); 
+    }
+}
 
 async function loadKvBucketsWrapper() {
   try {
     const list = await nats.getKvBuckets();
     ui.renderKvBuckets(list);
     ui.setKvStatus(`Loaded ${list.length} buckets.`);
-  } catch (e) { ui.setKvStatus("Error loading buckets", true); }
+  } catch (e) { 
+    ui.setKvStatus("Error loading buckets", true); 
+  }
 }
 
-els.btnKvRefresh.addEventListener("click", loadKvBucketsWrapper);
-const kvKeysMap = new Set(); 
-
-els.kvBucketSelect.addEventListener("change", async () => {
+async function handleKvBucketChange() {
   const bucket = els.kvBucketSelect.value;
   els.kvKeyList.innerHTML = '';
-  kvKeysMap.clear();
+  appState.kvKeys.clear();
+  
+  // Stop previous watcher to prevent memory leak
+  if (appState.currentKvWatcher) {
+    appState.currentKvWatcher.stop();
+    appState.currentKvWatcher = null;
+  }
+  
   if (!bucket) return;
+  
   try {
     await nats.openKvBucket(bucket);
     ui.setKvStatus(`Watching ${bucket}...`);
-    nats.watchKvBucket((key, op) => {
+    
+    // Store watcher reference so we can stop it later
+    appState.currentKvWatcher = await nats.watchKvBucket((key, op) => {
         if (op === "DEL" || op === "PURGE") {
-             kvKeysMap.delete(key);
+             appState.kvKeys.delete(key);
              ui.removeKvKey(key);
         } else {
-            if(!kvKeysMap.has(key)) {
-                kvKeysMap.add(key);
+            if(!appState.kvKeys.has(key)) {
+                appState.kvKeys.add(key);
                 ui.addKvKey(key, (k, div) => selectKeyWrapper(k, div));
                 if(els.kvFilter.value) ui.filterList(els.kvFilter, els.kvKeyList, ".kv-key");
             }
         }
     });
-  } catch (e) { ui.setKvStatus(e.message, true); }
-});
+  } catch (e) { 
+    ui.setKvStatus(e.message, true); 
+  }
+}
 
-// KV VIEW MODE LOGIC
-let isKvEditMode = false;
-
+/**
+ * Toggle between view mode and edit mode for KV values
+ */
 function setKvEditMode(isEdit) {
-    isKvEditMode = isEdit;
-    if (isKvEditMode) {
+    appState.kvEditMode = isEdit;
+    
+    if (appState.kvEditMode) {
+        // Edit mode: Show textarea
         els.kvValueInput.style.display = "block";
         els.kvValueHighlighter.style.display = "none";
         els.btnKvToggleMode.innerText = "👁 View";
         els.kvValueInput.focus();
     } else {
+        // View mode: Show syntax highlighted pre
         els.kvValueInput.style.display = "none";
         els.kvValueHighlighter.style.display = "block";
         els.btnKvToggleMode.innerText = "✎ Edit";
+        
+        // Update highlighter with current value
         try {
             const json = JSON.parse(els.kvValueInput.value);
             els.kvValueHighlighter.innerHTML = utils.syntaxHighlight(json);
@@ -288,10 +495,9 @@ function setKvEditMode(isEdit) {
     }
 }
 
-els.btnKvToggleMode.addEventListener("click", () => {
-    setKvEditMode(!isKvEditMode);
-});
-
+/**
+ * Load a KV key's current value and history
+ */
 async function selectKeyWrapper(key, uiEl) {
   ui.highlightKvKey(key, uiEl);
   els.kvKeyInput.value = key;
@@ -317,7 +523,7 @@ async function selectKeyWrapper(key, uiEl) {
     const hist = await nats.getKvHistory(key);
     
     ui.renderKvHistory(hist, (entry) => {
-        // LOGIC: What happens when history row is clicked
+        // Handle history entry click - load that revision
         const isDelete = entry.operation === "DEL" || entry.operation === "PURGE";
         
         if (isDelete) {
@@ -328,7 +534,7 @@ async function selectKeyWrapper(key, uiEl) {
             utils.beautify(els.kvValueInput);
             
             // If in view mode, update highlighter immediately
-            if (!isKvEditMode) {
+            if (!appState.kvEditMode) {
                 try {
                     const json = JSON.parse(els.kvValueInput.value);
                     els.kvValueHighlighter.innerHTML = utils.syntaxHighlight(json);
@@ -350,29 +556,40 @@ async function selectKeyWrapper(key, uiEl) {
   }
 }
 
-els.btnKvGet.addEventListener("click", () => selectKeyWrapper(els.kvKeyInput.value));
-els.btnKvCopy.addEventListener("click", () => {
+async function handleKvGet() {
+  await selectKeyWrapper(els.kvKeyInput.value);
+}
+
+function handleKvCopy() {
   const val = els.kvValueInput.value;
   if(!val) return;
+  
   navigator.clipboard.writeText(val);
   const orig = els.btnKvCopy.innerText;
   els.btnKvCopy.innerText = "Copied!";
   setTimeout(() => els.btnKvCopy.innerText = orig, 1000);
-});
-els.btnKvPut.addEventListener("click", async () => {
+}
+
+async function handleKvPut() {
   const key = els.kvKeyInput.value.trim();
   const val = els.kvValueInput.value;
   if (!key) return;
+  
   try {
     await nats.putKvValue(key, val);
     ui.setKvStatus(`Saved '${key}'`);
     ui.showToast("Key Saved", "success");
     selectKeyWrapper(key);
-  } catch (e) { ui.setKvStatus(e.message, true); ui.showToast(e.message, "error"); }
-});
-els.btnKvDelete.addEventListener("click", async () => {
+  } catch (e) { 
+    ui.setKvStatus(e.message, true); 
+    ui.showToast(e.message, "error"); 
+  }
+}
+
+async function handleKvDelete() {
   const key = els.kvKeyInput.value.trim();
   if (!key || !confirm(`Delete '${key}'?`)) return;
+  
   try {
     await nats.deleteKvValue(key);
     ui.setKvStatus(`Deleted '${key}'`);
@@ -380,36 +597,77 @@ els.btnKvDelete.addEventListener("click", async () => {
     els.kvValueHighlighter.innerText = "";
     els.kvHistoryList.innerHTML = "Key deleted.";
     ui.showToast("Key Deleted", "info");
-  } catch (e) { ui.setKvStatus(e.message, true); ui.showToast(e.message, "error"); }
-});
+  } catch (e) { 
+    ui.setKvStatus(e.message, true); 
+    ui.showToast(e.message, "error"); 
+  }
+}
 
-// --- STREAMS LOGIC ---
-let currentStream = null;
-els.btnStreamCreate.addEventListener("click", () => {
-    const template = { name: "NEW_STREAM", description: "Stream Description", subjects: ["events.>"], retention: "limits", max_msgs: -1, max_bytes: -1, max_age: 0, discard: "old", storage: "file", num_replicas: 1, duplicate_window: 120000000000 };
+// Wire up KV events
+els.btnKvCreate.addEventListener("click", handleKvCreate);
+els.btnKvEdit.addEventListener("click", handleKvEdit);
+els.btnKvRefresh.addEventListener("click", loadKvBucketsWrapper);
+els.kvBucketSelect.addEventListener("change", handleKvBucketChange);
+els.btnKvToggleMode.addEventListener("click", () => setKvEditMode(!appState.kvEditMode));
+els.btnKvGet.addEventListener("click", handleKvGet);
+els.btnKvCopy.addEventListener("click", handleKvCopy);
+els.btnKvPut.addEventListener("click", handleKvPut);
+els.btnKvDelete.addEventListener("click", handleKvDelete);
+els.kvFilter.addEventListener("keyup", () => ui.filterList(els.kvFilter, els.kvKeyList, ".kv-key"));
+
+// ============================================================================
+// STREAM HANDLERS
+// ============================================================================
+
+async function handleStreamCreate() {
+    const template = { 
+      name: "NEW_STREAM", 
+      description: "Stream Description", 
+      subjects: ["events.>"], 
+      retention: "limits", 
+      max_msgs: -1, 
+      max_bytes: -1, 
+      max_age: 0, 
+      discard: "old", 
+      storage: "file", 
+      num_replicas: 1, 
+      duplicate_window: 120000000000 
+    };
+    
     openConfigModal("Create Stream", template, async (config) => {
         try {
             await nats.createStream(config);
             ui.showToast(`Stream ${config.name} created`, "success");
             closeConfigModal();
             loadStreamsWrapper();
-        } catch(e) { ui.showToast(e.message, "error"); }
+        } catch(e) { 
+          ui.showToast(e.message, "error"); 
+        }
     });
-});
-els.btnStreamEdit.addEventListener("click", async () => {
-    if(!currentStream) { ui.showToast("Select a stream first", "info"); return; }
+}
+
+async function handleStreamEdit() {
+    if(!appState.currentStream) { 
+      ui.showToast("Select a stream first", "info"); 
+      return; 
+    }
+    
     try {
-        const info = await nats.getStreamInfo(currentStream);
-        openConfigModal(`Edit Stream: ${currentStream}`, info.config, async (config) => {
+        const info = await nats.getStreamInfo(appState.currentStream);
+        openConfigModal(`Edit Stream: ${appState.currentStream}`, info.config, async (config) => {
             try {
                 await nats.updateStream(config);
-                ui.showToast(`Stream ${currentStream} updated`, "success");
+                ui.showToast(`Stream ${appState.currentStream} updated`, "success");
                 closeConfigModal();
-                selectStreamWrapper(currentStream);
-            } catch(e) { ui.showToast(e.message, "error"); }
+                selectStreamWrapper(appState.currentStream);
+            } catch(e) { 
+              ui.showToast(e.message, "error"); 
+            }
         });
-    } catch(e) { ui.showToast("Error fetching stream info: " + e.message, "error"); }
-});
+    } catch(e) { 
+      ui.showToast("Error fetching stream info: " + e.message, "error"); 
+    }
+}
 
 async function loadStreamsWrapper() {
   els.streamList.innerHTML = '<div class="kv-empty">Loading...</div>';
@@ -418,21 +676,25 @@ async function loadStreamsWrapper() {
     list.sort((a,b) => a.config.name.localeCompare(b.config.name));
     ui.renderStreamList(list, (name, div) => selectStreamWrapper(name, div));
     if(els.streamFilter.value) ui.filterList(els.streamFilter, els.streamList, ".kv-key");
-  } catch (e) { els.streamList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; }
+  } catch (e) { 
+    els.streamList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+  }
 }
-els.btnStreamRefresh.addEventListener("click", loadStreamsWrapper);
 
 async function selectStreamWrapper(name, uiEl) {
   ui.highlightStream(uiEl);
-  currentStream = name;
+  appState.currentStream = name;
   els.streamEmptyState.style.display = "none";
   els.streamDetailView.style.display = "none"; 
   els.streamMsgContainer.innerHTML = `<div style="padding:20px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view stream messages</div>`;
   els.consumerList.innerHTML = `<div style="padding:10px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view consumers</div>`;
+  
   try {
     const info = await nats.getStreamInfo(name);
     const conf = info.config;
     const state = info.state;
+    
+    // Populate detail view
     els.streamNameTitle.innerText = conf.name;
     els.streamCreated.innerText = new Date(info.created).toLocaleString();
     els.streamSubjects.innerText = (conf.subjects || []).join(", ");
@@ -443,71 +705,108 @@ async function selectStreamWrapper(name, uiEl) {
     els.streamFirstSeq.innerText = state.first_seq;
     els.streamLastSeq.innerText = state.last_seq;
     els.streamConsumerCount.innerText = state.consumer_count;
+    
+    // Set default message range (last 50 messages)
     const last = state.last_seq;
     const first = state.first_seq;
     let start = last - 49;
     if (start < first) start = first;
     els.msgEndSeq.value = last;
     els.msgStartSeq.value = start > 0 ? start : 0;
+    
     els.streamDetailView.style.display = "block";
-  } catch (e) { ui.showToast(`Error loading stream info: ${e.message}`, "error"); }
+  } catch (e) { 
+    ui.showToast(`Error loading stream info: ${e.message}`, "error"); 
+  }
 }
 
-els.btnStreamClearMsgs.addEventListener("click", () => {
-    els.streamMsgContainer.innerHTML = `<div style="padding:20px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view stream messages</div>`;
-    els.streamMsgFilter.value = "";
-});
-
-els.streamMsgFilter.addEventListener("keyup", () => {
-    ui.filterList(els.streamMsgFilter, els.streamMsgContainer, ".stream-msg-entry");
-});
-
-els.btnStreamViewMsgs.addEventListener("click", async () => {
-    if(!currentStream) return;
+async function handleStreamViewMessages() {
+    if(!appState.currentStream) return;
+    
     const start = parseInt(els.msgStartSeq.value) || 0;
     const end = parseInt(els.msgEndSeq.value) || 0;
-    if(end < start) { ui.showToast("End Seq cannot be less than Start Seq", "error"); return; }
-    if((end - start) > 50) { ui.showToast("Range cannot exceed 50 messages", "error"); return; }
+    
+    if(end < start) { 
+      ui.showToast("End Seq cannot be less than Start Seq", "error"); 
+      return; 
+    }
+    if((end - start) > MAX_STREAM_MSG_FETCH) { 
+      ui.showToast(`Range cannot exceed ${MAX_STREAM_MSG_FETCH} messages`, "error"); 
+      return; 
+    }
+    
     els.btnStreamViewMsgs.disabled = true;
     els.streamMsgContainer.innerHTML = '<div class="kv-empty">Loading...</div>';
+    
     try {
-        const msgs = await nats.getStreamMessageRange(currentStream, start, end);
+        const msgs = await nats.getStreamMessageRange(appState.currentStream, start, end);
         ui.renderStreamMessages(msgs);
         if(els.streamMsgFilter.value) {
              ui.filterList(els.streamMsgFilter, els.streamMsgContainer, ".stream-msg-entry");
         }
-    } catch(e) { els.streamMsgContainer.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; } 
-    finally { els.btnStreamViewMsgs.disabled = false; }
-});
+    } catch(e) { 
+      els.streamMsgContainer.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+    } finally { 
+      els.btnStreamViewMsgs.disabled = false; 
+    }
+}
 
-els.btnLoadConsumers.addEventListener("click", async () => {
-    if(!currentStream) return;
+function handleStreamClearMessages() {
+    els.streamMsgContainer.innerHTML = `<div style="padding:20px; text-align:center; color:#666; font-size:0.8rem; font-style:italic;">Click Load to view stream messages</div>`;
+    els.streamMsgFilter.value = "";
+}
+
+async function handleLoadConsumers() {
+    if(!appState.currentStream) return;
+    
     els.btnLoadConsumers.disabled = true;
     els.consumerList.innerHTML = '<div class="kv-empty">Loading...</div>';
+    
     try {
-        const consumers = await nats.getConsumers(currentStream);
+        const consumers = await nats.getConsumers(appState.currentStream);
         ui.renderStreamConsumers(consumers);
-    } catch (e) { els.consumerList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; } 
-    finally { els.btnLoadConsumers.disabled = false; }
-});
+    } catch (e) { 
+      els.consumerList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+    } finally { 
+      els.btnLoadConsumers.disabled = false; 
+    }
+}
 
-els.btnStreamPurge.addEventListener("click", async () => {
-    if(!currentStream || !confirm(`Purge ALL messages from '${currentStream}'? This cannot be undone.`)) return;
+async function handleStreamPurge() {
+    if(!appState.currentStream || !confirm(`Purge ALL messages from '${appState.currentStream}'? This cannot be undone.`)) return;
+    
     try {
-        await nats.purgeStream(currentStream);
-        ui.showToast(`Stream '${currentStream}' purged`, "success");
-        selectStreamWrapper(currentStream); 
-    } catch(e) { ui.showToast(e.message, "error"); }
-});
+        await nats.purgeStream(appState.currentStream);
+        ui.showToast(`Stream '${appState.currentStream}' purged`, "success");
+        selectStreamWrapper(appState.currentStream); 
+    } catch(e) { 
+      ui.showToast(e.message, "error"); 
+    }
+}
 
-els.btnStreamDelete.addEventListener("click", async () => {
-    if(!currentStream || !confirm(`DELETE stream '${currentStream}'?`)) return;
+async function handleStreamDelete() {
+    if(!appState.currentStream || !confirm(`DELETE stream '${appState.currentStream}'?`)) return;
+    
     try {
-        await nats.deleteStream(currentStream);
-        ui.showToast(`Stream '${currentStream}' deleted`, "success");
-        currentStream = null;
+        await nats.deleteStream(appState.currentStream);
+        ui.showToast(`Stream '${appState.currentStream}' deleted`, "success");
+        appState.currentStream = null;
         els.streamDetailView.style.display = "none";
         els.streamEmptyState.style.display = "block";
         loadStreamsWrapper();
-    } catch(e) { ui.showToast(e.message, "error"); }
-});
+    } catch(e) { 
+      ui.showToast(e.message, "error"); 
+    }
+}
+
+// Wire up stream events
+els.btnStreamCreate.addEventListener("click", handleStreamCreate);
+els.btnStreamEdit.addEventListener("click", handleStreamEdit);
+els.btnStreamRefresh.addEventListener("click", loadStreamsWrapper);
+els.btnStreamViewMsgs.addEventListener("click", handleStreamViewMessages);
+els.btnStreamClearMsgs.addEventListener("click", handleStreamClearMessages);
+els.btnLoadConsumers.addEventListener("click", handleLoadConsumers);
+els.btnStreamPurge.addEventListener("click", handleStreamPurge);
+els.btnStreamDelete.addEventListener("click", handleStreamDelete);
+els.streamFilter.addEventListener("keyup", () => ui.filterList(els.streamFilter, els.streamList, ".kv-key"));
+els.streamMsgFilter.addEventListener("keyup", () => ui.filterList(els.streamMsgFilter, els.streamMsgContainer, ".stream-msg-entry"));

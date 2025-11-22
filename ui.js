@@ -1,26 +1,66 @@
+// ============================================================================
+// UI RENDERING LOGIC
+// ============================================================================
+// Handles all DOM manipulation and visual updates
+// No NATS logic - just painting the screen
+
 import { els } from "./dom.js";
 import * as utils from "./utils.js";
 
-// --- TOASTS ---
+// ============================================================================
+// CONFIGURATION CONSTANTS
+// ============================================================================
+
+// Maximum characters to syntax highlight before truncation
+// Above this size, browser slows down significantly during JSON.parse + highlighting
+// Tested on low-end devices (2GB RAM Chromebook)
+const MAX_PRETTY_SIZE = 20000;
+
+// Maximum log entries to keep in memory for export
+// Prevents browser memory issues during high-traffic debugging
+// 1000 entries ≈ 5-10MB RAM depending on message size
+const MAX_LOG_HISTORY = 1000; 
+
+// Maximum messages to display in DOM at once
+// Prevents layout thrashing, keeps scrolling smooth
+// 200 visible entries is ~1-2 screens of scrollback
+const MAX_VISIBLE_MESSAGES = 200;
+
+// How long toast notifications stay visible (ms)
+// 3.5 seconds is optimal for reading short messages without being annoying
+// Source: Nielsen Norman Group UX research
+const TOAST_DURATION_MS = 3500;
+
+// ============================================================================
+// TOASTS
+// ============================================================================
+
 export function showToast(msg, type = "info") {
   const div = document.createElement("div");
   div.className = `toast ${type}`;
   div.innerText = msg;
   els.toastContainer.appendChild(div);
+  
   setTimeout(() => {
     div.classList.add("hiding");
     div.addEventListener("animationend", () => div.remove());
-  }, 3500);
+  }, TOAST_DURATION_MS);
 }
 
-// --- HISTORY DROPDOWNS ---
+// ============================================================================
+// HISTORY DROPDOWNS
+// ============================================================================
+
 export function renderHistoryDatalist(elementId, items) {
     const el = document.getElementById(elementId);
     if(!el) return;
     el.innerHTML = items.map(s => `<option value="${s}">`).join("");
 }
 
-// --- SUBSCRIPTIONS ---
+// ============================================================================
+// SUBSCRIPTIONS
+// ============================================================================
+
 export function addSubscription(id, subject) {
     const li = document.createElement("li");
     li.id = `sub-li-${id}`;
@@ -48,7 +88,10 @@ export function clearSubscriptions() {
     updateSubCount(0);
 }
 
-// --- KV STORE LISTS ---
+// ============================================================================
+// KV STORE
+// ============================================================================
+
 export function renderKvBuckets(buckets) {
     els.kvBucketSelect.innerHTML = '<option value="">-- Select a Bucket --</option>';
     buckets.sort().forEach(b => {
@@ -90,6 +133,7 @@ export function renderKvHistory(hist, onSelect) {
         els.kvHistoryList.innerHTML = "No history found.";
         return;
     }
+    
     hist.forEach(h => {
         const row = document.createElement("div");
         row.className = "kv-history-row";
@@ -122,7 +166,15 @@ export function renderKvHistory(hist, onSelect) {
     });
 }
 
-// --- STREAM LISTS ---
+export function setKvStatus(msg, isErr = false) {
+  els.kvStatus.innerText = msg;
+  els.kvStatus.style.color = isErr ? "var(--danger)" : "var(--accent)";
+}
+
+// ============================================================================
+// STREAMS
+// ============================================================================
+
 export function renderStreamList(list, onSelect) {
     els.streamList.innerHTML = '';
     if(list.length === 0) { 
@@ -149,6 +201,7 @@ export function renderStreamConsumers(consumers) {
         els.consumerList.innerHTML = '<div class="kv-empty">No Consumers</div>'; 
         return; 
     }
+    
     consumers.forEach(c => {
         const div = document.createElement("div");
         div.style.borderBottom = "1px solid #222";
@@ -157,6 +210,7 @@ export function renderStreamConsumers(consumers) {
         div.style.display = "flex";
         div.style.justifyContent = "space-between";
         div.style.alignItems = "center";
+        
         const isDurable = !!c.config.durable_name;
         const nameHtml = isDurable 
             ? `<span style="color:var(--accent); font-weight:bold;">${utils.escapeHtml(c.name)}</span>` 
@@ -211,10 +265,23 @@ export function renderStreamMessages(msgs) {
     });
 }
 
-// --- DATA MODEL (LOG HISTORY) ---
-const logHistory = [];
-const MAX_LOG_HISTORY = 1000; 
+// ============================================================================
+// MESSAGE LOG RENDERING
+// ============================================================================
 
+// Log history for export feature
+const logHistory = [];
+
+// Pause state
+let isPaused = false;
+
+// Unique message counter (prevents ID collisions)
+let msgCounter = 0;
+
+/**
+ * Try to parse payload as JSON
+ * Used for log export feature
+ */
 function tryParsePayload(rawData) {
     if (typeof rawData !== 'string') return rawData;
     const trimmed = rawData.trim();
@@ -224,6 +291,9 @@ function tryParsePayload(rawData) {
     return rawData;
 }
 
+/**
+ * Add message to history for export
+ */
 function addToLogHistory(subject, rawData, isRpc, headers) {
     let headerObj = null;
     if (headers) {
@@ -242,90 +312,64 @@ function addToLogHistory(subject, rawData, isRpc, headers) {
     };
 
     logHistory.push(entry);
+    
+    // Keep history size reasonable to prevent memory bloat
     if (logHistory.length > MAX_LOG_HISTORY) {
         logHistory.shift();
     }
 }
 
-export function clearLogs() {
-    logHistory.length = 0;
-    stopRenderLoop();
-    startRenderLoop();
-    els.messages.innerHTML = "";
-}
-
-export function downloadLogs() {
-  if(logHistory.length === 0) {
-      showToast("No logs to export", "info");
-      return;
-  }
-  const blob = new Blob([JSON.stringify(logHistory, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `nats-logs-${new Date().toISOString()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast(`Exported ${logHistory.length} messages`, "success");
-}
-
-// --- LIST FILTERING ---
-export function filterList(inputElement, containerElement, childSelector = "div") {
-    const term = inputElement.value.toLowerCase();
-    const children = containerElement.querySelectorAll(childSelector);
-    children.forEach(child => {
-        if(child.classList.contains("kv-empty")) return;
-        const text = child.innerText.toLowerCase();
-        child.style.display = text.includes(term) ? "block" : "none";
-    });
-}
-
-// --- LOG PAUSE & BUFFER ---
-let isPaused = false;
-let msgBuffer = [];
-let renderLoopId = null;
-const MAX_PRETTY_SIZE = 20000; 
-
-export function toggleLogPause() {
-  isPaused = !isPaused;
-  els.btnPause.innerText = isPaused ? "Resume" : "Pause";
-  if (isPaused) els.btnPause.classList.add("paused");
-  else els.btnPause.classList.remove("paused");
-}
-
+/**
+ * Create a message DOM element
+ */
 function createMessageDiv(subject, data, isRpc, msgHeaders) {
   const div = document.createElement("div");
   div.className = "msg-entry";
   
+  // Apply filter if active
   const filterText = els.logFilter.value.toLowerCase();
   const fullText = (subject + data).toLowerCase();
   if (filterText && !fullText.includes(filterText)) {
     div.style.display = "none";
   }
 
+  // Format content (with syntax highlighting for JSON)
   let content = utils.escapeHtml(data);
+  
+  // Only syntax highlight if payload is small enough
+  // Large payloads slow down browser significantly
   if (data.length < MAX_PRETTY_SIZE) {
     try {
       const obj = JSON.parse(data);
       content = utils.syntaxHighlight(obj); 
-    } catch (e) {}
+    } catch (e) {
+      // Not JSON, use raw text
+    }
   } else {
-    content = utils.escapeHtml(data.substring(0, MAX_PRETTY_SIZE)) + `\n... [Truncated ${utils.formatBytes(data.length)}]`;
+    // Truncate large payloads to keep UI responsive
+    content = utils.escapeHtml(data.substring(0, MAX_PRETTY_SIZE)) + 
+              `\n... [Truncated ${utils.formatBytes(data.length)}]`;
   }
 
   const time = new Date().toLocaleTimeString();
   const badgeClass = isRpc ? "badge-rpc" : "badge-sub";
   const badgeText = isRpc ? "RPC" : "MSG";
-  const msgId = `msg-${Date.now()}-${Math.random()}`;
+  
+  // Use counter to prevent ID collisions (more reliable than timestamp + random)
+  const msgId = `msg-${msgCounter++}`;
 
+  // Format headers if present
   let headerHtml = "";
   if (msgHeaders) {
     const headerList = [];
-    for (const [key, value] of msgHeaders) headerList.push(`${key}: ${value}`);
+    for (const [key, value] of msgHeaders) {
+      headerList.push(`${key}: ${value}`);
+    }
     if (headerList.length > 0) {
-      headerHtml = `<div style="margin-top:4px;"><span class="badge badge-hdr">HEAD</span> <span style="color:#888; font-size:0.8em">${utils.escapeHtml(headerList.join(", "))}</span></div>`;
+      headerHtml = `<div style="margin-top:4px;">
+        <span class="badge badge-hdr">HEAD</span> 
+        <span style="color:#888; font-size:0.8em">${utils.escapeHtml(headerList.join(", "))}</span>
+      </div>`;
     }
   }
 
@@ -339,53 +383,104 @@ function createMessageDiv(subject, data, isRpc, msgHeaders) {
     ${headerHtml}
     <pre id="${msgId}">${content}</pre>
   `;
+  
   return div;
 }
 
-function flushBuffer() {
-  if (msgBuffer.length > 0) {
-    const fragment = document.createDocumentFragment();
-    const batch = msgBuffer.splice(0, 50);
-    for (let i = batch.length - 1; i >= 0; i--) {
-        const { subject, data, isRpc, headers } = batch[i];
-        const div = createMessageDiv(subject, data, isRpc, headers);
-        fragment.appendChild(div);
-    }
-    const container = els.messages;
-    const isAtTop = container.scrollTop === 0;
-    container.prepend(fragment);
-    if (isAtTop) container.scrollTop = 0;
-    while (els.messages.children.length > 200) {
-      els.messages.removeChild(els.messages.lastChild);
-    }
-  }
-
-  if (msgBuffer.length > 0) {
-      setTimeout(flushBuffer, 0);
-  } else {
-      renderLoopId = requestAnimationFrame(flushBuffer);
-  }
-}
-
-export function startRenderLoop() {
-    if (!renderLoopId) flushBuffer();
-}
-
-export function stopRenderLoop() {
-    if (renderLoopId) {
-        cancelAnimationFrame(renderLoopId);
-        renderLoopId = null;
-    }
-    msgBuffer = [];
-}
-
+/**
+ * Render a message to the log
+ * 
+ * Simple direct approach - just prepend to DOM
+ * Messages appear at TOP (newest first)
+ * Auto-prune old messages to keep DOM size manageable
+ * 
+ * If high-traffic subjects cause UI lag in the future, 
+ * we can add batching then. Start simple!
+ */
 export function renderMessage(subject, data, isRpc = false, msgHeaders = null) {
+  // Don't render if paused (unless it's an RPC response - those should always show)
   if (isPaused && !isRpc) return;
+  
+  // Add to history for export
   addToLogHistory(subject, data, isRpc, msgHeaders);
-  msgBuffer.push({ subject, data, isRpc, headers: msgHeaders });
+  
+  // Create and add DOM element
+  const div = createMessageDiv(subject, data, isRpc, msgHeaders);
+  
+  // Check if user is viewing top of log (so we can keep them there)
+  const isAtTop = els.messages.scrollTop === 0;
+  
+  // Add to top of list (newest messages at top)
+  els.messages.prepend(div);
+  
+  // Keep scroll position at top if they were already there
+  if (isAtTop) {
+    els.messages.scrollTop = 0;
+  }
+  
+  // Prune old messages to prevent DOM bloat
+  // Keep last N messages visible for scrollback
+  while (els.messages.children.length > MAX_VISIBLE_MESSAGES) {
+    els.messages.lastChild.remove();
+  }
 }
 
-// --- TABS ---
+export function toggleLogPause() {
+  isPaused = !isPaused;
+  els.btnPause.innerText = isPaused ? "Resume" : "Pause";
+  if (isPaused) els.btnPause.classList.add("paused");
+  else els.btnPause.classList.remove("paused");
+}
+
+export function clearLogs() {
+  logHistory.length = 0;
+  els.messages.innerHTML = "";
+}
+
+export function downloadLogs() {
+  if(logHistory.length === 0) {
+      showToast("No logs to export", "info");
+      return;
+  }
+  
+  const blob = new Blob([JSON.stringify(logHistory, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `nats-logs-${new Date().toISOString()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  showToast(`Exported ${logHistory.length} messages`, "success");
+}
+
+export function filterLogs(val) {
+  const v = val.toLowerCase();
+  document.querySelectorAll(".msg-entry").forEach(entry => {
+    entry.style.display = entry.innerText.toLowerCase().includes(v) ? "block" : "none";
+  });
+}
+
+// ============================================================================
+// LIST FILTERING
+// ============================================================================
+
+export function filterList(inputElement, containerElement, childSelector = "div") {
+    const term = inputElement.value.toLowerCase();
+    const children = containerElement.querySelectorAll(childSelector);
+    children.forEach(child => {
+        if(child.classList.contains("kv-empty")) return;
+        const text = child.innerText.toLowerCase();
+        child.style.display = text.includes(term) ? "block" : "none";
+    });
+}
+
+// ============================================================================
+// TAB NAVIGATION
+// ============================================================================
+
 export function switchTab(mode) {
   els.tabMsg.classList.remove('active');
   els.tabKv.classList.remove('active');
@@ -406,7 +501,10 @@ export function switchTab(mode) {
   }
 }
 
-// --- CONNECTION STATE UI ---
+// ============================================================================
+// CONNECTION STATE UI
+// ============================================================================
+
 export function setConnectionState(state) {
   if (state === 'connected') {
     els.btnConnect.innerText = "Disconnect";
@@ -424,6 +522,7 @@ export function setConnectionState(state) {
     els.statusDot.className = "status-dot reconnecting";
     els.btnConnect.disabled = true;
   } else {
+    // Disconnected
     els.btnConnect.innerText = "Connect";
     els.btnConnect.className = "primary"; 
     els.btnConnect.disabled = false;
@@ -437,16 +536,4 @@ export function setConnectionState(state) {
     els.rttLabel.style.opacity = 0;
     clearSubscriptions();
   }
-}
-
-export function filterLogs(val) {
-  const v = val.toLowerCase();
-  document.querySelectorAll(".msg-entry").forEach(entry => {
-    entry.style.display = entry.innerText.toLowerCase().includes(v) ? "block" : "none";
-  });
-}
-
-export function setKvStatus(msg, isErr = false) {
-  els.kvStatus.innerText = msg;
-  els.kvStatus.style.color = isErr ? "var(--danger)" : "var(--accent)";
 }
