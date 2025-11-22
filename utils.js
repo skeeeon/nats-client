@@ -1,39 +1,8 @@
 // ============================================================================
-// CONFIGURATION CONSTANTS
+// UTILITY FUNCTIONS
 // ============================================================================
-
-// Maximum items in subject/URL history (stored in localStorage)
-// Keep UI snappy - more than 10 gets unwieldy to scan in dropdown
-const MAX_SUBJECT_HISTORY = 10;
-const MAX_URL_HISTORY = 5;
-
-// ============================================================================
-// HISTORY MANAGEMENT
-// ============================================================================
-
-let subjectHistory = JSON.parse(localStorage.getItem("nats_subject_history") || "[]");
-let urlHistory = JSON.parse(localStorage.getItem("nats_url_history") || "[]");
-
-export function getSubjectHistory() { return subjectHistory; }
-export function getUrlHistory() { return urlHistory; }
-
-export function addSubjectHistory(subject) {
-  if (!subject) return subjectHistory;
-  subjectHistory = subjectHistory.filter(s => s !== subject);
-  subjectHistory.unshift(subject);
-  if (subjectHistory.length > MAX_SUBJECT_HISTORY) subjectHistory.pop();
-  localStorage.setItem("nats_subject_history", JSON.stringify(subjectHistory));
-  return subjectHistory;
-}
-
-export function addUrlHistory(url) {
-  if (!url) return urlHistory;
-  urlHistory = urlHistory.filter(u => u !== url);
-  urlHistory.unshift(url);
-  if (urlHistory.length > MAX_URL_HISTORY) urlHistory.pop();
-  localStorage.setItem("nats_url_history", JSON.stringify(urlHistory));
-  return urlHistory;
-}
+// Pure helper functions with no side effects
+// No DOM manipulation, no localStorage, no globals
 
 // ============================================================================
 // JSON UTILITIES
@@ -116,14 +85,19 @@ export function syntaxHighlight(json) {
 }
 
 // ============================================================================
-// GLOBAL HELPERS
+// CLIPBOARD UTILITIES
 // ============================================================================
 
 /**
- * Copy element text to clipboard
- * Used by onclick handlers in rendered HTML
+ * Copy text content to clipboard
+ * Returns promise that resolves on success
  */
-window.copyToClipboard = (id) => {
-  const el = document.getElementById(id);
-  if (el) navigator.clipboard.writeText(el.innerText);
-};
+export async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    console.error("Failed to copy to clipboard:", e);
+    return false;
+  }
+}

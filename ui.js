@@ -32,6 +32,48 @@ const MAX_VISIBLE_MESSAGES = 200;
 const TOAST_DURATION_MS = 3500;
 
 // ============================================================================
+// MODULE INITIALIZATION
+// ============================================================================
+
+/**
+ * Setup event delegation for copy buttons
+ * Call this once on app initialization
+ */
+export function initializeEventDelegation() {
+  // Handle copy buttons in message log
+  els.messages.addEventListener('click', async (e) => {
+    if (e.target.classList.contains('copy-btn')) {
+      const msgId = e.target.dataset.msgId;
+      const el = document.getElementById(msgId);
+      if (el) {
+        const success = await utils.copyToClipboard(el.innerText);
+        if (success) {
+          const originalText = e.target.innerText;
+          e.target.innerText = "Copied!";
+          setTimeout(() => e.target.innerText = originalText, 1000);
+        }
+      }
+    }
+  });
+
+  // Handle copy buttons in stream messages
+  els.streamMsgContainer.addEventListener('click', async (e) => {
+    if (e.target.classList.contains('copy-btn')) {
+      const msgId = e.target.dataset.msgId;
+      const el = document.getElementById(msgId);
+      if (el) {
+        const success = await utils.copyToClipboard(el.innerText);
+        if (success) {
+          const originalText = e.target.innerText;
+          e.target.innerText = "Copied!";
+          setTimeout(() => e.target.innerText = originalText, 1000);
+        }
+      }
+    }
+  });
+}
+
+// ============================================================================
 // TOASTS
 // ============================================================================
 
@@ -61,17 +103,29 @@ export function renderHistoryDatalist(elementId, items) {
 // SUBSCRIPTIONS
 // ============================================================================
 
+/**
+ * Add subscription to UI
+ * Returns the list item element so caller can attach events if needed
+ */
 export function addSubscription(id, subject) {
     const li = document.createElement("li");
     li.id = `sub-li-${id}`;
-    li.innerHTML = `
-      <span style="cursor:pointer;" title="Click to copy to Publish" 
-            onclick="document.getElementById('pubSubject').value = '${subject}'">
-        ${utils.escapeHtml(subject)}
-      </span>
-      <button class="danger" onclick="window.unsubscribe(${id})">X</button>
-    `;
+    
+    const span = document.createElement("span");
+    span.style.cursor = "pointer";
+    span.title = "Click to copy to Publish";
+    span.innerText = subject;
+    
+    const btn = document.createElement("button");
+    btn.className = "danger";
+    btn.innerText = "X";
+    btn.dataset.subId = id;
+    
+    li.appendChild(span);
+    li.appendChild(btn);
     els.subList.prepend(li);
+    
+    return { li, span, btn };
 }
 
 export function removeSubscription(id) {
@@ -257,7 +311,7 @@ export function renderStreamMessages(msgs) {
             </div>
             <div style="color:#ddd; font-weight:bold; margin-bottom:4px;">${utils.escapeHtml(m.subject)}</div>
             <div style="position:relative;">
-                <button class="copy-btn" style="position:absolute; top:0; right:0;" onclick="window.copyToClipboard('${msgId}')">Copy JSON</button>
+                <button class="copy-btn" style="position:absolute; top:0; right:0;" data-msg-id="${msgId}">Copy JSON</button>
                 <pre id="${msgId}" style="margin:0; font-size:0.8em; color:#aaa; padding-top:24px;">${content}</pre>
             </div>
         `;
@@ -378,7 +432,7 @@ function createMessageDiv(subject, data, isRpc, msgHeaders) {
       <span class="badge ${badgeClass}">${badgeText}</span>
       <span>${time}</span>
       <span style="color:#ddd; font-weight:bold;">${utils.escapeHtml(subject)}</span>
-      <button class="copy-btn" onclick="window.copyToClipboard('${msgId}')">Copy JSON</button>
+      <button class="copy-btn" data-msg-id="${msgId}">Copy JSON</button>
     </div>
     ${headerHtml}
     <pre id="${msgId}">${content}</pre>

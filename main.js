@@ -12,6 +12,7 @@ import { els } from "./dom.js";
 import * as utils from "./utils.js";
 import * as ui from "./ui.js";
 import * as nats from "./nats-client.js";
+import * as storage from "./storage.js";
 
 // ============================================================================
 // CONFIGURATION CONSTANTS
@@ -54,32 +55,76 @@ const appState = {
 // ============================================================================
 
 /**
+ * Initialize the application
+ * Setup event delegation and restore saved state
+ */
+function initializeApp() {
+  // Setup event delegation for copy buttons and unsubscribe buttons
+  ui.initializeEventDelegation();
+  setupSubscriptionEventDelegation();
+  
+  // Restore history and last URL
+  refreshHistoryUi();
+  const savedUrl = storage.getLastUrl();
+  if (savedUrl) els.url.value = savedUrl;
+  
+  // Handle URL parameters (for deep linking)
+  handleUrlParameters();
+}
+
+/**
+ * Setup event delegation for subscription list
+ * Handles unsubscribe button clicks and subject clicks
+ */
+function setupSubscriptionEventDelegation() {
+  // Handle unsubscribe button clicks
+  els.subList.addEventListener('click', (e) => {
+    if (e.target.classList.contains('danger')) {
+      const subId = parseInt(e.target.dataset.subId);
+      if (!isNaN(subId)) {
+        handleUnsubscribe(subId);
+      }
+    }
+    
+    // Handle subject clicks (copy to publish field)
+    if (e.target.tagName === 'SPAN' && e.target.parentElement.id.startsWith('sub-li-')) {
+      els.pubSubject.value = e.target.innerText;
+    }
+  });
+}
+
+/**
  * Refresh history dropdowns (subjects and URLs)
  */
 function refreshHistoryUi() {
-    ui.renderHistoryDatalist("subHistory", utils.getSubjectHistory());
-    ui.renderHistoryDatalist("urlHistory", utils.getUrlHistory());
+    ui.renderHistoryDatalist("subHistory", storage.getSubjectHistory());
+    ui.renderHistoryDatalist("urlHistory", storage.getUrlHistory());
 }
 
-// Initialize on load
-refreshHistoryUi();
+/**
+ * Handle URL parameters for deep linking
+ */
+function handleUrlParameters() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramUrl = urlParams.get('url');
+  const paramToken = urlParams.get('token');
+  const paramUser = urlParams.get('user');
+  const paramPass = urlParams.get('pass');
+  const autoConnect = urlParams.has('connect');
 
-// Restore last used URL from localStorage
-const savedUrl = localStorage.getItem("nats_url");
-if (savedUrl) els.url.value = savedUrl;
+  if (paramUrl) els.url.value = paramUrl;
+  if (paramToken) els.authToken.value = paramToken;
+  if (paramUser) els.authUser.value = paramUser;
+  if (paramPass) els.authPass.value = paramPass;
+  
+  // Auto-connect if requested
+  if (autoConnect) {
+    setTimeout(() => handleConnect(), 100);
+  }
+}
 
-// Handle URL parameters (for deep linking)
-const urlParams = new URLSearchParams(window.location.search);
-const paramUrl = urlParams.get('url');
-const paramToken = urlParams.get('token');
-const paramUser = urlParams.get('user');
-const paramPass = urlParams.get('pass');
-const autoConnect = urlParams.has('connect');
-
-if (paramUrl) els.url.value = paramUrl;
-if (paramToken) els.authToken.value = paramToken;
-if (paramUser) els.authUser.value = paramUser;
-if (paramPass) els.authPass.value = paramPass;
+// Initialize app on load
+initializeApp();
 
 // ============================================================================
 // CONNECTION HANDLERS
@@ -89,25 +134,32 @@ async function handleConnect() {
   // If already connected, disconnect
   if (nats.isConnected()) {
     try {
+      await nats.disconnect();
       ui.setConnectionState('disconnected');
       ui.showToast("Disconnected", "info");
-      await nats.disconnect();
     } catch (err) {
-      ui.showToast(`Error disconnecting: ${err.message}`, "error");
+      console.error("Error during disconnect:", err);
+      ui.showToast(`Disconnect error: ${err.message}`, "error");
     }
     return; 
   }
 
   // Otherwise, connect
+  const url = els.url.value.trim();
+  
+  if (!url) {
+    ui.showToast("Please enter a server URL", "error");
+    return;
+  }
+  
   try {
-    const url = els.url.value;
-    
-    // Save URL to localStorage and history
-    localStorage.setItem("nats_url", url);
-    utils.addUrlHistory(url);
+    // Save URL to storage and history
+    storage.saveUrl(url);
+    storage.addUrlToHistory(url);
     refreshHistoryUi();
     
     els.statusText.innerText = "Connecting...";
+    els.btnConnect.disabled = true;
     
     // Gather authentication options
     const authOptions = {
@@ -141,12 +193,18 @@ async function handleConnect() {
     ui.showToast("Connected to NATS", "success");
 
     // Load data for active tab
-    if (els.tabKv.classList.contains('active')) loadKvBucketsWrapper();
-    else if (els.tabStream.classList.contains('active')) loadStreamsWrapper();
+    if (els.tabKv.classList.contains('active')) {
+      loadKvBucketsWrapper();
+    } else if (els.tabStream.classList.contains('active')) {
+      loadStreamsWrapper();
+    }
 
   } catch (err) {
+    console.error("Connection error:", err);
     ui.setConnectionState('disconnected');
-    ui.showToast(`Connection Failed: ${err.message}`, "error");
+    ui.showToast(err.message, "error");
+  } finally {
+    els.btnConnect.disabled = false;
   }
 }
 
@@ -164,11 +222,6 @@ function handleCloseModal() {
 els.btnConnect.addEventListener("click", handleConnect);
 els.btnInfo.addEventListener("click", handleShowServerInfo);
 els.btnCloseModal.addEventListener("click", handleCloseModal);
-
-// Auto-connect if URL param present
-if (autoConnect) {
-  setTimeout(() => handleConnect(), 100);
-}
 
 // ============================================================================
 // CONFIG MODAL HANDLERS
@@ -198,9 +251,15 @@ async function handleConfigSave() {
         ui.showToast("Invalid JSON", "error");
         return;
     }
+    
     if(appState.activeConfigAction) {
-        const config = JSON.parse(els.configInput.value);
-        await appState.activeConfigAction(config);
+        try {
+            const config = JSON.parse(els.configInput.value);
+            await appState.activeConfigAction(config);
+        } catch (error) {
+            console.error("Config save error:", error);
+            ui.showToast(error.message, "error");
+        }
     }
 }
 
@@ -249,7 +308,7 @@ function handleSubscribe() {
   if (!subj) return;
   
   try {
-    utils.addSubjectHistory(subj);
+    storage.addSubjectToHistory(subj);
     refreshHistoryUi();
     
     // Subscribe with message callback
@@ -261,17 +320,22 @@ function handleSubscribe() {
     ui.updateSubCount(size);
     els.subSubject.value = "";
     ui.showToast(`Subscribed to ${subject}`, "success");
-  } catch (err) { 
+  } catch (err) {
+    console.error("Subscribe error:", err);
     ui.showToast(err.message, "error"); 
   }
 }
 
-// Global unsubscribe function (called from UI via onclick attribute)
-window.unsubscribe = (id) => {
-  const size = nats.unsubscribe(id);
-  ui.removeSubscription(id);
-  ui.updateSubCount(size);
-};
+function handleUnsubscribe(id) {
+  try {
+    const size = nats.unsubscribe(id);
+    ui.removeSubscription(id);
+    ui.updateSubCount(size);
+  } catch (error) {
+    console.error("Unsubscribe error:", error);
+    ui.showToast(error.message, "error");
+  }
+}
 
 // Wire up subscription events
 els.btnSub.addEventListener("click", handleSubscribe);
@@ -285,33 +349,43 @@ els.subSubject.addEventListener("keyup", (e) => {
 
 function handlePublish() {
   const subj = els.pubSubject.value.trim();
-  if (!subj) return;
+  if (!subj) {
+    ui.showToast("Enter a subject", "error");
+    return;
+  }
   
   try {
-    utils.addSubjectHistory(subj);
+    storage.addSubjectToHistory(subj);
     refreshHistoryUi();
     nats.publish(subj, els.pubPayload.value, els.pubHeaders.value);
     
     // Show checkmark feedback
     els.btnPub.innerText = "✓";
     setTimeout(() => els.btnPub.innerText = "Pub", 1000);
-  } catch (err) { 
+  } catch (err) {
+    console.error("Publish error:", err);
     ui.showToast(err.message, "error"); 
   }
 }
 
 async function handleRequest() {
   const subj = els.pubSubject.value.trim();
+  if (!subj) {
+    ui.showToast("Enter a subject", "error");
+    return;
+  }
+  
   const timeout = parseInt(els.reqTimeout.value) || DEFAULT_RPC_TIMEOUT_MS;
   
   try {
-    utils.addSubjectHistory(subj);
+    storage.addSubjectToHistory(subj);
     refreshHistoryUi();
     els.btnReq.disabled = true;
     
     const msg = await nats.request(subj, els.pubPayload.value, els.pubHeaders.value, timeout);
     ui.renderMessage(msg.subject, msg.data, true, msg.headers);
-  } catch (err) { 
+  } catch (err) {
+    console.error("Request error:", err);
     ui.showToast(err.message, "error"); 
   } finally { 
     els.btnReq.disabled = false; 
@@ -382,7 +456,8 @@ async function handleKvCreate() {
             ui.showToast(`Bucket ${config.bucket} created`, "success");
             closeConfigModal();
             loadKvBucketsWrapper();
-        } catch(e) { 
+        } catch(e) {
+          console.error("KV create error:", e);
           ui.showToast(e.message, "error"); 
         }
     });
@@ -413,11 +488,13 @@ async function handleKvEdit() {
                 await nats.updateKvBucket(config);
                 ui.showToast(`Bucket ${bucket} updated`, "success");
                 closeConfigModal();
-            } catch(e) { 
+            } catch(e) {
+              console.error("KV update error:", e);
               ui.showToast(e.message, "error"); 
             }
         });
-    } catch(e) { 
+    } catch(e) {
+      console.error("KV status error:", e);
       ui.showToast("Error fetching KV status: " + e.message, "error"); 
     }
 }
@@ -427,8 +504,10 @@ async function loadKvBucketsWrapper() {
     const list = await nats.getKvBuckets();
     ui.renderKvBuckets(list);
     ui.setKvStatus(`Loaded ${list.length} buckets.`);
-  } catch (e) { 
+  } catch (e) {
+    console.error("Load KV buckets error:", e);
     ui.setKvStatus("Error loading buckets", true); 
+    ui.showToast(e.message, "error");
   }
 }
 
@@ -462,8 +541,10 @@ async function handleKvBucketChange() {
             }
         }
     });
-  } catch (e) { 
+  } catch (e) {
+    console.error("KV bucket open error:", e);
     ui.setKvStatus(e.message, true); 
+    ui.showToast(e.message, "error");
   }
 }
 
@@ -549,38 +630,51 @@ async function selectKeyWrapper(key, uiEl) {
         ui.setKvStatus(`Viewing Rev ${entry.revision} (Historical)`);
     });
 
-  } catch (e) { 
+  } catch (e) {
+      console.error("KV select key error:", e);
       els.kvValueInput.value = ""; 
       els.kvValueHighlighter.innerText = "";
-      ui.setKvStatus(e.message, true); 
+      ui.setKvStatus(e.message, true);
+      ui.showToast(e.message, "error");
   }
 }
 
 async function handleKvGet() {
-  await selectKeyWrapper(els.kvKeyInput.value);
+  const key = els.kvKeyInput.value.trim();
+  if (!key) {
+    ui.showToast("Enter a key name", "error");
+    return;
+  }
+  await selectKeyWrapper(key);
 }
 
-function handleKvCopy() {
+async function handleKvCopy() {
   const val = els.kvValueInput.value;
   if(!val) return;
   
-  navigator.clipboard.writeText(val);
-  const orig = els.btnKvCopy.innerText;
-  els.btnKvCopy.innerText = "Copied!";
-  setTimeout(() => els.btnKvCopy.innerText = orig, 1000);
+  const success = await utils.copyToClipboard(val);
+  if (success) {
+    const orig = els.btnKvCopy.innerText;
+    els.btnKvCopy.innerText = "Copied!";
+    setTimeout(() => els.btnKvCopy.innerText = orig, 1000);
+  }
 }
 
 async function handleKvPut() {
   const key = els.kvKeyInput.value.trim();
   const val = els.kvValueInput.value;
-  if (!key) return;
+  if (!key) {
+    ui.showToast("Enter a key name", "error");
+    return;
+  }
   
   try {
     await nats.putKvValue(key, val);
     ui.setKvStatus(`Saved '${key}'`);
     ui.showToast("Key Saved", "success");
     selectKeyWrapper(key);
-  } catch (e) { 
+  } catch (e) {
+    console.error("KV put error:", e);
     ui.setKvStatus(e.message, true); 
     ui.showToast(e.message, "error"); 
   }
@@ -597,7 +691,8 @@ async function handleKvDelete() {
     els.kvValueHighlighter.innerText = "";
     els.kvHistoryList.innerHTML = "Key deleted.";
     ui.showToast("Key Deleted", "info");
-  } catch (e) { 
+  } catch (e) {
+    console.error("KV delete error:", e);
     ui.setKvStatus(e.message, true); 
     ui.showToast(e.message, "error"); 
   }
@@ -640,7 +735,8 @@ async function handleStreamCreate() {
             ui.showToast(`Stream ${config.name} created`, "success");
             closeConfigModal();
             loadStreamsWrapper();
-        } catch(e) { 
+        } catch(e) {
+          console.error("Stream create error:", e);
           ui.showToast(e.message, "error"); 
         }
     });
@@ -660,11 +756,13 @@ async function handleStreamEdit() {
                 ui.showToast(`Stream ${appState.currentStream} updated`, "success");
                 closeConfigModal();
                 selectStreamWrapper(appState.currentStream);
-            } catch(e) { 
+            } catch(e) {
+              console.error("Stream update error:", e);
               ui.showToast(e.message, "error"); 
             }
         });
-    } catch(e) { 
+    } catch(e) {
+      console.error("Stream info error:", e);
       ui.showToast("Error fetching stream info: " + e.message, "error"); 
     }
 }
@@ -676,8 +774,10 @@ async function loadStreamsWrapper() {
     list.sort((a,b) => a.config.name.localeCompare(b.config.name));
     ui.renderStreamList(list, (name, div) => selectStreamWrapper(name, div));
     if(els.streamFilter.value) ui.filterList(els.streamFilter, els.streamList, ".kv-key");
-  } catch (e) { 
-    els.streamList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+  } catch (e) {
+    console.error("Load streams error:", e);
+    els.streamList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`;
+    ui.showToast(e.message, "error");
   }
 }
 
@@ -715,7 +815,8 @@ async function selectStreamWrapper(name, uiEl) {
     els.msgStartSeq.value = start > 0 ? start : 0;
     
     els.streamDetailView.style.display = "block";
-  } catch (e) { 
+  } catch (e) {
+    console.error("Stream select error:", e);
     ui.showToast(`Error loading stream info: ${e.message}`, "error"); 
   }
 }
@@ -744,8 +845,10 @@ async function handleStreamViewMessages() {
         if(els.streamMsgFilter.value) {
              ui.filterList(els.streamMsgFilter, els.streamMsgContainer, ".stream-msg-entry");
         }
-    } catch(e) { 
+    } catch(e) {
+      console.error("Stream messages error:", e);
       els.streamMsgContainer.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+      ui.showToast(e.message, "error");
     } finally { 
       els.btnStreamViewMsgs.disabled = false; 
     }
@@ -765,8 +868,10 @@ async function handleLoadConsumers() {
     try {
         const consumers = await nats.getConsumers(appState.currentStream);
         ui.renderStreamConsumers(consumers);
-    } catch (e) { 
-      els.consumerList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`; 
+    } catch (e) {
+      console.error("Load consumers error:", e);
+      els.consumerList.innerHTML = `<div class="kv-empty" style="color:var(--danger)">Error: ${e.message}</div>`;
+      ui.showToast(e.message, "error");
     } finally { 
       els.btnLoadConsumers.disabled = false; 
     }
@@ -779,7 +884,8 @@ async function handleStreamPurge() {
         await nats.purgeStream(appState.currentStream);
         ui.showToast(`Stream '${appState.currentStream}' purged`, "success");
         selectStreamWrapper(appState.currentStream); 
-    } catch(e) { 
+    } catch(e) {
+      console.error("Stream purge error:", e);
       ui.showToast(e.message, "error"); 
     }
 }
@@ -794,7 +900,8 @@ async function handleStreamDelete() {
         els.streamDetailView.style.display = "none";
         els.streamEmptyState.style.display = "block";
         loadStreamsWrapper();
-    } catch(e) { 
+    } catch(e) {
+      console.error("Stream delete error:", e);
       ui.showToast(e.message, "error"); 
     }
 }

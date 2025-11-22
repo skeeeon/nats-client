@@ -34,33 +34,66 @@ let statsInterval = null;
 // ============================================================================
 
 /**
- * Connect to NATS server
+ * Connect to NATS server with proper error handling and cleanup
  * @param {string} url - WebSocket URL (ws:// or wss://)
  * @param {object} authOptions - Authentication credentials
  * @param {function} onStatusChange - Callback for connection status changes
  * @param {function} onStats - Callback for RTT/stats updates
  */
 export async function connectToNats(url, authOptions, onStatusChange, onStats) {
+  // Always cleanup first to prevent resource leaks
   await disconnect(); 
   
   const opts = { servers: url, ignoreClusterUpdates: true };
   
-  // Handle authentication
-  if (authOptions.credsFile) {
-    let rawText = await authOptions.credsFile.text();
-    const jwtIndex = rawText.indexOf("-----BEGIN NATS USER JWT-----");
-    if (jwtIndex > 0) rawText = rawText.substring(jwtIndex);
-    else if (jwtIndex === -1) throw new Error("Invalid .creds file");
-    rawText = rawText.replace(/\r\n/g, "\n");
-    opts.authenticator = credsAuthenticator(new TextEncoder().encode(rawText));
-  } else if (authOptions.token) {
-    opts.token = authOptions.token;
-  } else if (authOptions.user) {
-    opts.user = authOptions.user;
-    opts.pass = authOptions.pass;
+  try {
+    // Handle authentication
+    if (authOptions.credsFile) {
+      let rawText = await authOptions.credsFile.text();
+      const jwtIndex = rawText.indexOf("-----BEGIN NATS USER JWT-----");
+      if (jwtIndex > 0) rawText = rawText.substring(jwtIndex);
+      else if (jwtIndex === -1) throw new Error("Invalid .creds file: JWT section not found");
+      rawText = rawText.replace(/\r\n/g, "\n");
+      opts.authenticator = credsAuthenticator(new TextEncoder().encode(rawText));
+    } else if (authOptions.token) {
+      opts.token = authOptions.token;
+    } else if (authOptions.user) {
+      opts.user = authOptions.user;
+      opts.pass = authOptions.pass;
+    }
+    
+    // Attempt connection
+    nc = await connect(opts);
+    
+    // Only setup monitoring if connection succeeded
+    setupConnectionMonitoring(onStatusChange);
+    startStatsLoop(onStats);
+    
+    return nc;
+    
+  } catch (error) {
+    // Cleanup on failure
+    await disconnect();
+    
+    // Provide user-friendly error messages
+    if (error.message.includes("ECONNREFUSED") || error.message.includes("Failed to fetch")) {
+      throw new Error("Cannot reach NATS server. Check URL and ensure WebSocket is enabled.");
+    } else if (error.message.includes("Authorization Violation")) {
+      throw new Error("Authentication failed. Check credentials.");
+    } else if (error.message.includes("Invalid .creds")) {
+      throw error; // Our own error message, pass through
+    } else {
+      throw new Error(`Connection failed: ${error.message}`);
+    }
   }
-  
-  nc = await connect(opts);
+}
+
+/**
+ * Setup connection status monitoring
+ * Monitors for disconnects, reconnects, and errors
+ */
+function setupConnectionMonitoring(onStatusChange) {
+  if (!nc) return;
   
   // Monitor connection status changes
   (async () => {
@@ -73,6 +106,9 @@ export async function connectToNats(url, authOptions, onStatusChange, onStats) {
             case "reconnect": 
               if (onStatusChange) onStatusChange('connected'); 
               break;
+            case "error":
+              console.error("NATS connection error:", s.data);
+              break;
         }
       }
     } catch (e) {
@@ -83,26 +119,52 @@ export async function connectToNats(url, authOptions, onStatusChange, onStats) {
   // Monitor connection close
   nc.closed().then((err) => { 
     if (onStatusChange) onStatusChange('disconnected', err); 
+  }).catch((err) => {
+    console.error("Connection closed with error:", err);
+    if (onStatusChange) onStatusChange('disconnected', err);
   });
-  
-  // Start stats polling
-  startStatsLoop(onStats);
-  
-  return nc;
 }
 
 export async function disconnect() {
-  if (statsInterval) clearInterval(statsInterval);
-  if (activeKvWatcher) { activeKvWatcher.stop(); activeKvWatcher = null; }
-  if (nc) { await nc.close(); nc = null; }
-  kv = null; 
-  jsm = null; 
-  subscriptions.clear(); 
-  subCounter = 0;
+  try {
+    // Stop stats polling
+    if (statsInterval) {
+      clearInterval(statsInterval);
+      statsInterval = null;
+    }
+    
+    // Stop KV watcher
+    if (activeKvWatcher) { 
+      activeKvWatcher.stop(); 
+      activeKvWatcher = null; 
+    }
+    
+    // Close connection
+    if (nc) { 
+      await nc.close(); 
+      nc = null; 
+    }
+    
+    // Clear state
+    kv = null; 
+    jsm = null; 
+    subscriptions.clear(); 
+    subCounter = 0;
+  } catch (error) {
+    console.error("Error during disconnect:", error);
+    // Force cleanup even if errors occur
+    nc = null;
+    kv = null;
+    jsm = null;
+    statsInterval = null;
+    activeKvWatcher = null;
+    subscriptions.clear();
+    subCounter = 0;
+  }
 }
 
 export function isConnected() { 
-  return !!nc; 
+  return nc && !nc.isClosed(); 
 }
 
 export function getServerInfo() { 
@@ -117,7 +179,12 @@ function startStatsLoop(onStats) {
   if (statsInterval) clearInterval(statsInterval);
   
   statsInterval = setInterval(async () => {
-    if (!nc || nc.isClosed()) return;
+    if (!nc || nc.isClosed()) {
+      clearInterval(statsInterval);
+      statsInterval = null;
+      return;
+    }
+    
     try {
       const rtt = await nc.rtt();
       if (onStats) onStats({ rtt });
@@ -138,54 +205,78 @@ function startStatsLoop(onStats) {
  * @returns {object} - { id, subject, size }
  */
 export function subscribe(subject, onMessage) {
-  if (!nc) throw new Error("Not Connected");
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
   
-  const sub = nc.subscribe(subject);
-  const id = ++subCounter;
-  subscriptions.set(id, { sub, subject });
-  
-  (async () => {
-    for await (const m of sub) {
-      try { 
-        const data = sc.decode(m.data);
-        if (onMessage) onMessage(m.subject, data, false, m.headers);
-      } catch (e) { 
-        // Binary data
-        if (onMessage) onMessage(m.subject, `[Binary Data: ${m.data.length} bytes]`, false, m.headers);
+  try {
+    const sub = nc.subscribe(subject);
+    const id = ++subCounter;
+    subscriptions.set(id, { sub, subject });
+    
+    (async () => {
+      try {
+        for await (const m of sub) {
+          try { 
+            const data = sc.decode(m.data);
+            if (onMessage) onMessage(m.subject, data, false, m.headers);
+          } catch (e) { 
+            // Binary data
+            if (onMessage) onMessage(m.subject, `[Binary Data: ${m.data.length} bytes]`, false, m.headers);
+          }
+        }
+      } catch (e) {
+        console.error(`Subscription error for ${subject}:`, e);
       }
-    }
-  })();
-  
-  return { id, subject, size: subscriptions.size };
+    })();
+    
+    return { id, subject, size: subscriptions.size };
+  } catch (error) {
+    throw new Error(`Failed to subscribe to ${subject}: ${error.message}`);
+  }
 }
 
 export function unsubscribe(id) {
   const item = subscriptions.get(id);
   if (item) { 
-    item.sub.unsubscribe(); 
+    try {
+      item.sub.unsubscribe(); 
+    } catch (e) {
+      console.error("Error unsubscribing:", e);
+    }
     subscriptions.delete(id); 
-    return subscriptions.size; 
   }
   return subscriptions.size;
 }
 
 export function publish(subject, payload, headersJson) {
-  if (!nc) return;
-  const h = parseHeaders(headersJson);
-  nc.publish(subject, sc.encode(payload), { headers: h });
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
+    const h = parseHeaders(headersJson);
+    nc.publish(subject, sc.encode(payload), { headers: h });
+  } catch (error) {
+    throw new Error(`Failed to publish: ${error.message}`);
+  }
 }
 
 export async function request(subject, payload, headersJson, timeout) {
-  if (!nc) return;
-  const h = parseHeaders(headersJson);
-  const msg = await nc.request(subject, sc.encode(payload), { timeout, headers: h });
-  let data;
-  try { 
-    data = sc.decode(msg.data); 
-  } catch (e) { 
-    data = `[Binary Response: ${msg.data.length} bytes]`; 
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
+    const h = parseHeaders(headersJson);
+    const msg = await nc.request(subject, sc.encode(payload), { timeout, headers: h });
+    let data;
+    try { 
+      data = sc.decode(msg.data); 
+    } catch (e) { 
+      data = `[Binary Response: ${msg.data.length} bytes]`; 
+    }
+    return { subject: msg.subject, data, headers: msg.headers };
+  } catch (error) {
+    if (error.message.includes("timeout")) {
+      throw new Error(`Request timeout after ${timeout}ms. No responder available?`);
+    }
+    throw new Error(`Request failed: ${error.message}`);
   }
-  return { subject: msg.subject, data, headers: msg.headers };
 }
 
 /**
@@ -214,22 +305,42 @@ function parseHeaders(jsonStr) {
 // ============================================================================
 
 export async function getKvBuckets() {
-  if (!nc) return [];
-  const kvm = new Kvm(nc);
-  const list = [];
-  for await (const status of await kvm.list()) list.push(status.bucket);
-  return list;
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
+    const kvm = new Kvm(nc);
+    const list = [];
+    for await (const status of await kvm.list()) list.push(status.bucket);
+    return list;
+  } catch (error) {
+    throw new Error(`Failed to list KV buckets: ${error.message}`);
+  }
 }
 
-export async function createKvBucket(config) { 
-  const kvm = new Kvm(nc); 
-  await kvm.create(config.bucket, config); 
+export async function createKvBucket(config) {
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
+    const kvm = new Kvm(nc); 
+    await kvm.create(config.bucket, config);
+  } catch (error) {
+    if (error.message.includes("already exists")) {
+      throw new Error(`Bucket '${config.bucket}' already exists`);
+    }
+    throw new Error(`Failed to create bucket: ${error.message}`);
+  }
 }
 
-export async function openKvBucket(bucketName) { 
-  const kvm = new Kvm(nc); 
-  kv = await kvm.open(bucketName); 
-  return kv; 
+export async function openKvBucket(bucketName) {
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
+    const kvm = new Kvm(nc); 
+    kv = await kvm.open(bucketName);
+    return kv;
+  } catch (error) {
+    throw new Error(`Failed to open bucket '${bucketName}': ${error.message}`);
+  }
 }
 
 export async function getKvStatus() { 
@@ -241,7 +352,10 @@ export async function getKvStatus() {
  * Update KV bucket configuration
  * KV buckets are backed by JetStream streams, so we update the underlying stream
  */
-export async function updateKvBucket(config) { 
+export async function updateKvBucket(config) {
+  if (!nc || nc.isClosed()) throw new Error("Not Connected");
+  
+  try {
     const mgr = await getJsm();
     const streamName = `KV_${config.bucket}`;
     
@@ -260,6 +374,9 @@ export async function updateKvBucket(config) {
     sc.num_replicas = config.replicas;
     
     await mgr.streams.update(streamName, sc);
+  } catch (error) {
+    throw new Error(`Failed to update bucket: ${error.message}`);
+  }
 }
 
 /**
@@ -268,34 +385,45 @@ export async function updateKvBucket(config) {
  * @returns {AsyncIterable} - The watcher (call .stop() to cleanup)
  */
 export async function watchKvBucket(onKeyChange) {
-  if (!kv) return;
+  if (!kv) throw new Error("No bucket open");
   if (activeKvWatcher) activeKvWatcher.stop();
   
-  const iter = await kv.watch();
-  activeKvWatcher = iter;
-  
-  (async () => {
-    try { 
-      for await (const e of iter) {
-        if (onKeyChange) onKeyChange(e.key, e.operation);
+  try {
+    const iter = await kv.watch();
+    activeKvWatcher = iter;
+    
+    (async () => {
+      try { 
+        for await (const e of iter) {
+          if (onKeyChange) onKeyChange(e.key, e.operation);
+        }
+      } catch (err) {
+        console.error("KV watch error:", err);
       }
-    } catch (err) {
-      console.error("KV watch error:", err);
-    }
-  })();
-  
-  return iter;
+    })();
+    
+    return iter;
+  } catch (error) {
+    throw new Error(`Failed to watch bucket: ${error.message}`);
+  }
 }
 
 export async function getKvValue(key) {
   if (!kv) throw new Error("No Bucket Open");
-  const entry = await kv.get(key);
-  if (!entry) return null;
-  return { value: sc.decode(entry.value), revision: entry.revision };
+  
+  try {
+    const entry = await kv.get(key);
+    if (!entry) return null;
+    return { value: sc.decode(entry.value), revision: entry.revision };
+  } catch (error) {
+    throw new Error(`Failed to get key '${key}': ${error.message}`);
+  }
 }
 
 export async function getKvHistory(key) {
-    if (!kv) return [];
+  if (!kv) throw new Error("No Bucket Open");
+  
+  try {
     const hist = [];
     const iter = await kv.history({ key });
     for await (const e of iter) {
@@ -307,16 +435,29 @@ export async function getKvHistory(key) {
         });
     }
     return hist.reverse();
+  } catch (error) {
+    throw new Error(`Failed to get history for '${key}': ${error.message}`);
+  }
 }
 
 export async function putKvValue(key, value) { 
-  if (!kv) throw new Error("No Bucket Open"); 
-  await kv.put(key, sc.encode(value)); 
+  if (!kv) throw new Error("No Bucket Open");
+  
+  try {
+    await kv.put(key, sc.encode(value));
+  } catch (error) {
+    throw new Error(`Failed to put key '${key}': ${error.message}`);
+  }
 }
 
 export async function deleteKvValue(key) { 
-  if (!kv) throw new Error("No Bucket Open"); 
-  await kv.delete(key); 
+  if (!kv) throw new Error("No Bucket Open");
+  
+  try {
+    await kv.delete(key);
+  } catch (error) {
+    throw new Error(`Failed to delete key '${key}': ${error.message}`);
+  }
 }
 
 // ============================================================================
@@ -324,50 +465,81 @@ export async function deleteKvValue(key) {
 // ============================================================================
 
 async function getJsm() { 
-  if (!nc) throw new Error("Not Connected"); 
+  if (!nc || nc.isClosed()) throw new Error("Not Connected"); 
   if (!jsm) jsm = await nc.jetstreamManager(); 
   return jsm; 
 }
 
 export async function getStreams() {
-  const mgr = await getJsm();
-  const list = [];
-  const iter = await mgr.streams.list();
-  for await (const s of iter) list.push(s);
-  return list;
+  try {
+    const mgr = await getJsm();
+    const list = [];
+    const iter = await mgr.streams.list();
+    for await (const s of iter) list.push(s);
+    return list;
+  } catch (error) {
+    throw new Error(`Failed to list streams: ${error.message}`);
+  }
 }
 
-export async function createStream(config) { 
-  const mgr = await getJsm(); 
-  await mgr.streams.add(config); 
+export async function createStream(config) {
+  try {
+    const mgr = await getJsm(); 
+    await mgr.streams.add(config);
+  } catch (error) {
+    if (error.message.includes("already exists")) {
+      throw new Error(`Stream '${config.name}' already exists`);
+    }
+    throw new Error(`Failed to create stream: ${error.message}`);
+  }
 }
 
-export async function updateStream(config) { 
-  const mgr = await getJsm(); 
-  await mgr.streams.update(config.name, config); 
+export async function updateStream(config) {
+  try {
+    const mgr = await getJsm(); 
+    await mgr.streams.update(config.name, config);
+  } catch (error) {
+    throw new Error(`Failed to update stream: ${error.message}`);
+  }
 }
 
-export async function getStreamInfo(name) { 
-  const mgr = await getJsm(); 
-  return await mgr.streams.info(name); 
+export async function getStreamInfo(name) {
+  try {
+    const mgr = await getJsm(); 
+    return await mgr.streams.info(name);
+  } catch (error) {
+    throw new Error(`Failed to get stream info: ${error.message}`);
+  }
 }
 
-export async function purgeStream(name) { 
-  const mgr = await getJsm(); 
-  await mgr.streams.purge(name); 
+export async function purgeStream(name) {
+  try {
+    const mgr = await getJsm(); 
+    await mgr.streams.purge(name);
+  } catch (error) {
+    throw new Error(`Failed to purge stream: ${error.message}`);
+  }
 }
 
-export async function deleteStream(name) { 
-  const mgr = await getJsm(); 
-  await mgr.streams.delete(name); 
+export async function deleteStream(name) {
+  try {
+    const mgr = await getJsm(); 
+    await mgr.streams.delete(name);
+  } catch (error) {
+    throw new Error(`Failed to delete stream: ${error.message}`);
+  }
 }
 
 export async function getConsumers(streamName) {
-  const mgr = await getJsm();
-  const list = [];
-  const iter = await mgr.consumers.list(streamName);
-  for await (const c of iter) list.push(c);
-  return list;
+  try {
+    const mgr = await getJsm();
+    const list = [];
+    const iter = await mgr.consumers.list(streamName);
+    for await (const c of iter) list.push(c);
+    return list;
+  } catch (error) {
+    throw new Error(`Failed to list consumers: ${error.message}`);
+  }
 }
 
 /**
@@ -378,6 +550,7 @@ export async function getConsumers(streamName) {
  * @returns {Array} - Array of message objects
  */
 export async function getStreamMessageRange(name, startSeq, endSeq) {
+  try {
     const mgr = await getJsm();
     if(startSeq < 1) startSeq = 1;
     if(endSeq < startSeq) return [];
@@ -397,5 +570,8 @@ export async function getStreamMessageRange(name, startSeq, endSeq) {
     }
     
     const results = await Promise.all(promises);
-    return results.filter(m => m !== null).reverse(); 
+    return results.filter(m => m !== null).reverse();
+  } catch (error) {
+    throw new Error(`Failed to fetch messages: ${error.message}`);
+  }
 }
