@@ -562,7 +562,8 @@ export function switchTab(mode) {
 export function setConnectionState(state) {
   if (state === 'connected') {
     els.btnConnect.innerText = "Disconnect";
-    els.btnConnect.className = "danger"; 
+    els.btnConnect.className = "danger";
+    els.btnConnect.disabled = false;
     els.url.disabled = true;
     els.creds.disabled = true;
     els.subPanel.style.display = "flex";
